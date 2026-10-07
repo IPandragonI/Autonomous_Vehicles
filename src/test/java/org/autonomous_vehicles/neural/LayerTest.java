@@ -1,9 +1,9 @@
 package org.autonomous_vehicles.neural;
 
+import org.autonomous_vehicles.util.Rng;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class LayerTest {
 
@@ -21,10 +21,10 @@ public class LayerTest {
     }
 
     @Test
-    public void testForwardWithWrongInputLength() {
-        Neuron neuron = new Neuron(new double[]{0.5, -0.5}, 0.1, new Sigmoid());
+    public void testRandomLayer() {
+        Rng rng = new Rng(42);
+        Layer layer = Layer.random(3, 2, new Sigmoid(), rng);
 
-        Layer layer = new Layer(new Neuron[]{neuron});
-        assertThrows(IllegalArgumentException.class, () -> layer.forward(new double[]{1.0}));
+        assertEquals(2, layer.forward(new double[]{1.0, 1.0, 1.0}).length);
     }
 }
