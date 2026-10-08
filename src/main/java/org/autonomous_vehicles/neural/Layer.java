@@ -15,7 +15,7 @@ public record Layer(Neuron[] neurons) {
     public static Layer random(int inputSize, int outputSize, ActivationFunction activation, Rng rng) {
         Neuron[] neurons = new Neuron[outputSize];
         for (int i = 0; i < outputSize; i++) {
-            neurons[i] = Neuron.random(inputSize, activation, rng);
+            neurons[i] = Neuron.random(inputSize, outputSize, activation, rng);
         }
         return new Layer(neurons);
     }
@@ -26,5 +26,16 @@ public record Layer(Neuron[] neurons) {
             count += neuron.weights().length + 1; // +1 for the bias
         }
         return count;
+    }
+
+    public void setNeuron(int index, Neuron neuron) {
+        neurons[index] = neuron;
+    }
+
+    public void dump() {
+        for (int i = 0; i < neurons.length; i++) {
+            System.out.println("Neuron " + i + ":");
+            neurons[i].dump();
+        }
     }
 }

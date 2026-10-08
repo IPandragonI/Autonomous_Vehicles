@@ -23,12 +23,21 @@ public record Neuron(double[] weights, double bias, ActivationFunction activatio
         return activation.activate(sum);
     }
 
-    public static Neuron random(int inputSize, ActivationFunction activation, Rng rng) {
+    public static Neuron random(int inputSize, int outputSize, ActivationFunction activation, Rng rng) {
         double[] randomWeights = new double[inputSize];
+        double limit = Math.sqrt(6.0 / (inputSize + outputSize));
         for (int i = 0; i < inputSize; i++) {
-            randomWeights[i] = rng.nextDouble() * 2 - 1;
+            randomWeights[i] = rng.nextDouble() * 2 * limit - limit;
         }
-        double randomBias = rng.nextDouble() * 2 - 1;
+        double randomBias = rng.nextDouble() * 2 * limit - limit;
         return new Neuron(randomWeights, randomBias, activation);
+    }
+
+    public void dump() {
+        System.out.print("Weights: ");
+        for (double weight : weights) {
+            System.out.printf("%.4f ", weight);
+        }
+        System.out.printf("Bias: %.4f Activation: %s%n", bias, activation.getClass().getSimpleName());
     }
 }
