@@ -10,7 +10,7 @@ import org.autonomous_vehicles.util.Rng;
 
 public record Neuron(double[] weights, double bias, ActivationFunction activation) {
 
-    public double compute(double[] inputs) {
+    public double calculateWeightedSum(double[] inputs) {
         if (inputs.length != weights.length) {
             throw new IllegalArgumentException("Input length must match weights length.");
         }
@@ -20,7 +20,11 @@ public record Neuron(double[] weights, double bias, ActivationFunction activatio
             sum += weights[i] * inputs[i];
         }
 
-        return activation.activate(sum);
+        return sum;
+    }
+
+    public double compute(double[] inputs) {
+        return activation.activate(calculateWeightedSum(inputs));
     }
 
     public static Neuron random(int inputSize, int outputSize, ActivationFunction activation, Rng rng) {

@@ -7,4 +7,5 @@ package org.autonomous_vehicles.neural;
 
 public interface ActivationFunction {
     double activate(double input);
+    double derivative(double input);
 }

@@ -42,7 +42,7 @@ public class NeuralNetwork {
         double[] genome = new double[getParameterCount()];
         int index = 0;
         for (Layer layer : layers) {
-            for (Neuron neuron : layer.neurons()) {
+            for (Neuron neuron : layer.getNeurons()) {
                 System.arraycopy(neuron.weights(), 0, genome, index, neuron.weights().length);
                 index += neuron.weights().length;
                 genome[index++] = neuron.bias();
@@ -63,8 +63,8 @@ public class NeuralNetwork {
         int index = 0;
 
         for (Layer layer : layers) {
-            for (int i = 0; i < layer.neurons().length; i++) {
-                Neuron oldNeuron = layer.neurons()[i];
+            for (int i = 0; i < layer.getNeurons().length; i++) {
+                Neuron oldNeuron = layer.getNeurons()[i];
                 double[] weights = new double[oldNeuron.weights().length];
                 System.arraycopy(genome, index, weights, 0, weights.length);
 
