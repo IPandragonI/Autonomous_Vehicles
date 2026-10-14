@@ -10,6 +10,11 @@ public final class Layer {
     private double[] lastPreActivations;
     private double[] lastOutput;
 
+    private double[] lastDeltas;
+    private double[][] lastWeightGradients;
+    private double[] lastBiasGradients;
+
+
     public Layer(Neuron[] neurons) {
         if (neurons == null || neurons.length == 0) {
             throw new IllegalArgumentException("A layer must contain at least one neuron.");
@@ -37,6 +42,36 @@ public final class Layer {
         lastOutput = outputs;
 
         return outputs.clone();
+    }
+
+    public double[] backward(double[] dLossDActivations) {
+        if (lastInput == null || lastPreActivations == null) {
+            throw new IllegalStateException("forward() must be called before backward().");
+        }
+
+        if (dLossDActivations == null || dLossDActivations.length != neurons.length) {
+            throw new IllegalArgumentException("dLossDActivations must not be null and must match the number of neurons.");
+        }
+
+        double[] dLossDInputs = new double[lastInput.length];
+        lastDeltas = new double[neurons.length];
+        lastWeightGradients = new double[neurons.length][lastInput.length];
+        lastBiasGradients = new double[neurons.length];
+
+        for (int i = 0; i < neurons.length; i++) {
+            double dActivationDPreActivation = neurons[i].activation().derivative(lastPreActivations[i]);
+            lastDeltas[i] = dLossDActivations[i] * dActivationDPreActivation;
+            double[] weights = neurons[i].weights();
+
+            for (int j = 0; j < lastInput.length; j++) {
+                lastWeightGradients[i][j] = lastDeltas[i] * lastInput[j];
+                dLossDInputs[j] += lastDeltas[i] * weights[j];
+            }
+
+            lastBiasGradients[i] = lastDeltas[i];
+        }
+
+        return dLossDInputs.clone();
     }
 
     public static Layer random(int inputSize, int outputSize, ActivationFunction activation, Rng rng) {
@@ -94,5 +129,27 @@ public final class Layer {
 
     public double[] getLastPreActivations() {
         return lastPreActivations == null ? null : lastPreActivations.clone();
+    }
+
+    public double[] getLastDeltas() {
+        return lastDeltas == null ? null : lastDeltas.clone();
+    }
+
+    public double[][] getLastWeightGradients() {
+        if (lastWeightGradients == null) {
+            return null;
+        }
+
+        double[][] copy = new double[lastWeightGradients.length][];
+
+        for (int i = 0; i < lastWeightGradients.length; i++) {
+            copy[i] = lastWeightGradients[i].clone();
+        }
+
+        return copy;
+    }
+
+    public double[] getLastBiasGradients() {
+        return lastBiasGradients == null ? null : lastBiasGradients.clone();
     }
 }

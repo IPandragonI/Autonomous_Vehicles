@@ -1,54 +1,130 @@
+
 package org.autonomous_vehicles.neural;
 
 public class Trainer {
-    private final double[] weights;
-    private double bias;
-    private final double learningRate;
-    private final ActivationFunction activationFunction;
 
-    public Trainer(int inputSize, double learningRate) {
-        this.weights = new double[inputSize];
-        this.bias = 0.0;
+    private final NeuralNetwork network;
+    private final double learningRate;
+
+    public Trainer(NeuralNetwork network, double learningRate) {
+        if (network == null) {
+            throw new IllegalArgumentException("Network must not be null.");
+        }
+
+        if (!Double.isFinite(learningRate) || learningRate <= 0.0) {
+            throw new IllegalArgumentException("Learning rate must be positive and finite.");
+        }
+
+        this.network = network;
         this.learningRate = learningRate;
-        this.activationFunction = new Sigmoid();
     }
 
     public double predict(double[] inputs) {
-        if (inputs.length != weights.length) {
-            throw new IllegalArgumentException("Input size does not match weights size.");
+        double[] outputs = network.forward(inputs);
+
+        if (outputs.length != 1) {
+            throw new IllegalStateException("predict() requires a network with one output.");
         }
-        double sum = bias;
-        for (int i = 0; i < weights.length; i++) {
-            sum += weights[i] * inputs[i];
-        }
-        return activationFunction.activate(sum);
+
+        return outputs[0];
     }
 
     public void trainEpoch(LogicDataset dataset) {
+        validateDataset(dataset);
+
         for (int i = 0; i < dataset.inputs().length; i++) {
-            double[] inputs = dataset.inputs()[i];
-            double target = dataset.targets()[i];
+            trainExample(dataset.inputs()[i], dataset.targets()[i]);
+        }
+    }
 
-            double prediction = predict(inputs);
+    private void trainExample(double[] inputs, double target) {
+        double[] predictions = network.forward(inputs);
 
-            double delta = 2 * (prediction - target) * prediction * (1 - prediction);
-            for (int j = 0; j < weights.length; j++) {
-                weights[j] -= learningRate * delta * inputs[j];
+        if (predictions.length != 1) {
+            throw new IllegalArgumentException("This trainer expects one output per example.");
+        }
+
+        double[] outputGradients = {
+                Loss.mseDerivative(predictions[0], target)
+        };
+
+        network.backward(outputGradients);
+
+        double[] gradients = network.getGradientGenome();
+        network.applyGradients(gradients, learningRate);
+    }
+
+    public void trainMiniBatch(LogicDataset dataset, int batchSize) {
+        validateDataset(dataset);
+
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("Batch size must be positive.");
+        }
+
+        double[][] inputs = dataset.inputs();
+        double[] targets = dataset.targets();
+
+        for (int start = 0; start < inputs.length; start += batchSize) {
+            int end = Math.min(start + batchSize, inputs.length);
+            double[] accumulatedGradients = new double[network.getParameterCount()];
+            int actualBatchSize = end - start;
+
+            for (int i = start; i < end; i++) {
+                double[] predictions = network.forward(inputs[i]);
+
+                if (predictions.length != 1) {throw new IllegalArgumentException("This trainer expects one output per example.");}
+
+                double[] outputGradients = {Loss.mseDerivative(predictions[0], targets[i])};
+
+                network.backward(outputGradients);
+
+                double[] gradients = network.getGradientGenome();
+
+                for (int j = 0; j < gradients.length; j++) {accumulatedGradients[j] += gradients[j];}
             }
-            bias -= learningRate * delta;
+
+            for (int j = 0; j < accumulatedGradients.length; j++) {
+                accumulatedGradients[j] /= actualBatchSize;
+            }
+
+            network.applyGradients(accumulatedGradients, learningRate);
         }
     }
 
     public double evaluateLoss(LogicDataset dataset) {
-        double totalLoss = 0.0;
-        for (int i = 0; i < dataset.inputs().length; i++) {
-            double[] inputs = dataset.inputs()[i];
-            double target = dataset.targets()[i];
+        validateDataset(dataset);
 
-            double prediction = predict(inputs);
-            double loss = Loss.mse(prediction, target);
-            totalLoss += loss;
+        double totalLoss = 0.0;
+        double[][] inputs = dataset.inputs();
+        double[] targets = dataset.targets();
+
+        for (int i = 0; i < inputs.length; i++) {
+            double prediction = predict(inputs[i]);
+            totalLoss += Loss.mse(prediction, targets[i]);
         }
-        return totalLoss / dataset.inputs().length;
+
+        return totalLoss / inputs.length;
+    }
+
+    private void validateDataset(LogicDataset dataset) {
+        if (dataset == null
+                || dataset.inputs() == null
+                || dataset.targets() == null
+                || dataset.inputs().length == 0
+                || dataset.inputs().length != dataset.targets().length) {
+            throw new IllegalArgumentException("Dataset must contain matching, non-empty inputs and targets.");
+        }
+
+        int inputSize = network.getArchitecture()[0];
+
+        for (double[] inputs : dataset.inputs()) {
+            if (inputs == null || inputs.length != inputSize) {
+                throw new IllegalArgumentException("Dataset input size does not match the network.");
+            }
+        }
+    }
+
+    public NeuralNetwork getNetwork() {
+        return network;
     }
 }

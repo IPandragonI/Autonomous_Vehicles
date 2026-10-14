@@ -27,8 +27,7 @@ public class NeuralNetworkTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> network.forward(new double[]{1.0})
-        );
+                () -> network.forward(new double[]{1.0}));
     }
 
     @Test
@@ -153,4 +152,53 @@ public class NeuralNetworkTest {
         assertNotEquals(originalGenome[0], copy.getGenome()[0]);
         assertEquals(originalGenome[0], network.getGenome()[0], 1e-9);
     }
+
+
+    @Test
+    public void testBackward() {
+        NeuralNetwork network = new NeuralNetwork(new Rng(42), 2, 3, 1);
+
+        double[] inputs = {0.5, -0.2};
+        double[] outputs = network.forward(inputs);
+
+        double[] dLossDOutputs = {2.0 * (outputs[0] - 1.0)};
+
+        double[][] gradients = network.backward(dLossDOutputs);
+
+        assertEquals(2, gradients.length);
+        assertEquals(3, gradients[1].length);
+        assertEquals(2, gradients[0].length);
+
+        for (double[] layerGradients : gradients) {
+            for (double gradient : layerGradients) {
+                assertTrue(Double.isFinite(gradient));
+            }
+        }
+    }
+
+    @Test
+    public void testBackwardBeforeForwardThrows() {
+        NeuralNetwork network = new NeuralNetwork(new Rng(42), 2, 3, 1);
+
+        assertThrows(IllegalStateException.class, () -> network.backward(new double[]{1.0}));
+    }
+
+    @Test
+    public void testBackwardWithWrongGradientLengthThrows() {
+        NeuralNetwork network = new NeuralNetwork(new Rng(42), 2, 3, 1);
+
+        network.forward(new double[]{0.5, -0.2});
+
+        assertThrows(IllegalArgumentException.class, () -> network.backward(new double[]{1.0, 2.0}));
+    }
+
+    @Test
+    public void testBackwardWithNullGradientThrows() {
+        NeuralNetwork network = new NeuralNetwork(new Rng(42), 2, 3, 1);
+
+        network.forward(new double[]{0.5, -0.2});
+
+        assertThrows(IllegalArgumentException.class, () -> network.backward(null));
+    }
+
 }
