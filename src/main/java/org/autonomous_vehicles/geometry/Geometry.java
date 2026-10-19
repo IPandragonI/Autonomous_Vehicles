@@ -1,5 +1,6 @@
 package org.autonomous_vehicles.geometry;
 
+import java.util.List;
 import java.util.Optional;
 
 public final class Geometry {
@@ -34,8 +35,6 @@ public final class Geometry {
             return Optional.empty();
         }
 
-        // Le rayon et le segment sont parallèles.
-        // Vérifie s'ils sont également sur la même droite.
         if (Math.abs(offset.cross(rayDirection)) > EPSILON) {
             return Optional.empty();
         }
@@ -49,12 +48,10 @@ public final class Geometry {
         double nearest = Math.min(t1, t2);
         double farthest = Math.max(t1, t2);
 
-        // Tout le segment se trouve derrière le rayon.
         if (farthest < -EPSILON) {
             return Optional.empty();
         }
 
-        // Le chevauchement commence à l'origine du rayon.
         double t = Math.max(0.0, nearest);
 
         if (t > farthest + EPSILON) {
@@ -77,17 +74,14 @@ public final class Geometry {
         double rLengthSquared = r.lengthSquared();
         double sLengthSquared = s.lengthSquared();
 
-        // Les deux segments sont réduits à des points.
         if (rLengthSquared <= EPSILON * EPSILON && sLengthSquared <= EPSILON * EPSILON) {
             return p.distanceTo(q) <= EPSILON ? Optional.of(p) : Optional.empty();
         }
 
-        // Le premier segment est un point.
         if (rLengthSquared <= EPSILON * EPSILON) {
             return pointOnSegment(p, second) ? Optional.of(p) : Optional.empty();
         }
 
-        // Le deuxième segment est un point.
         if (sLengthSquared <= EPSILON * EPSILON) {
             return pointOnSegment(q, first) ? Optional.of(q) : Optional.empty();
         }
@@ -95,7 +89,6 @@ public final class Geometry {
         Vec2 offset = q.subtract(p);
         double denominator = r.cross(s);
 
-        // Segments non parallèles.
         if (Math.abs(denominator) > EPSILON) {
             double t = offset.cross(s) / denominator;
             double u = offset.cross(r) / denominator;
@@ -108,23 +101,77 @@ public final class Geometry {
             return Optional.empty();
         }
 
-        // Parallèles mais sur des droites différentes.
         if (Math.abs(offset.cross(r)) > EPSILON) {
             return Optional.empty();
         }
 
-        // Colinéaires : cherche le début du chevauchement.
         double t1 = offset.dot(r) / rLengthSquared;
         double t2 = q.add(s).subtract(p).dot(r) / rLengthSquared;
 
-        double start = Math.clamp(t2, 0.0, t1);
-        double end = Math.clamp(t2, t1, 1.0);
+        double start = Math.max(0.0, Math.min(t1, t2));
+        double end = Math.min(1.0, Math.max(t1, t2));
 
         if (start > end + EPSILON) {
             return Optional.empty();
         }
 
-        return Optional.of(p.add(r.scale(Math.clamp(start, 0.0, 1.0))));
+        return Optional.of(p.add(r.scale(Math.min(start, 1.0))));
+    }
+
+    public static double distancePointToSegment(Vec2 point, Segment segment) {
+        return point.distanceTo(closestPointOnSegment(point, segment));
+    }
+
+    public static Vec2 closestPointOnSegment(Vec2 point, Segment segment) {
+        if (point == null || segment == null) {
+            throw new IllegalArgumentException("Arguments must not be null.");
+        }
+
+        Vec2 direction = segment.direction();
+        double lengthSquared = direction.lengthSquared();
+
+        if (lengthSquared <= EPSILON * EPSILON) {
+            return segment.start();
+        }
+
+        double t = Math.clamp(point.subtract(segment.start()).dot(direction) / lengthSquared, 0.0, 1.0);
+        return segment.start().add(direction.scale(t));
+    }
+
+    /**
+     * Signed area of a closed polygon (positive when the points turn counter-clockwise).
+     */
+    public static double signedArea(List<Vec2> polygon) {
+        double area = 0.0;
+
+        for (int i = 0; i < polygon.size(); i++) {
+            Vec2 a = polygon.get(i);
+            Vec2 b = polygon.get((i + 1) % polygon.size());
+            area += a.cross(b);
+        }
+
+        return area / 2.0;
+    }
+
+    public static boolean isInsidePolygon(Vec2 point, List<Vec2> polygon) {
+        boolean inside = false;
+
+        for (int i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+            Vec2 a = polygon.get(i);
+            Vec2 b = polygon.get(j);
+
+            boolean crossesY = (a.y() > point.y()) != (b.y() > point.y());
+
+            if (crossesY) {
+                double intersectionX = a.x() + (point.y() - a.y()) * (b.x() - a.x()) / (b.y() - a.y());
+
+                if (point.x() < intersectionX) {
+                    inside = !inside;
+                }
+            }
+        }
+
+        return inside;
     }
 
 

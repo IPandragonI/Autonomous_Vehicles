@@ -64,6 +64,51 @@ class RngTest {
     }
 
     @Test
+    @DisplayName("a negative seed still produces values in [0, 1)")
+    void negativeSeedStaysInRange() {
+        Rng rng = new Rng(-42);
+
+        for (int i = 0; i < 1_000; i++) {
+            double value = rng.nextDouble();
+            assertTrue(value >= 0.0 && value < 1.0, "Value out of range: " + value);
+        }
+    }
+
+    @Test
+    @DisplayName("nextInt stays in [0, bound) and is roughly uniform")
+    void nextIntIsUniform() {
+        Rng rng = new Rng(7);
+        int[] counts = new int[10];
+
+        for (int i = 0; i < 100_000; i++) {
+            counts[rng.nextInt(10)]++;
+        }
+
+        for (int count : counts) {
+            assertEquals(10_000, count, 500);
+        }
+    }
+
+    @Test
+    @DisplayName("nextGaussian has mean 0 and standard deviation 1")
+    void nextGaussianIsStandardNormal() {
+        Rng rng = new Rng(9);
+        double sum = 0.0;
+        double sumSquares = 0.0;
+        int n = 100_000;
+
+        for (int i = 0; i < n; i++) {
+            double value = rng.nextGaussian();
+            sum += value;
+            sumSquares += value * value;
+        }
+
+        double mean = sum / n;
+        assertEquals(0.0, mean, 0.02);
+        assertEquals(1.0, Math.sqrt(sumSquares / n - mean * mean), 0.02);
+    }
+
+    @Test
     @DisplayName("a zero seed advances to the expected first value")
     void zeroSeedProducesExpectedFirstValue() {
         Rng rng = new Rng(0);

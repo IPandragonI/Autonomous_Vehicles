@@ -153,6 +153,33 @@ public class NeuralNetworkTest {
         assertEquals(originalGenome[0], network.getGenome()[0], 1e-9);
     }
 
+    @Test
+    public void testCopyKeepsTheActivationFunction() {
+        NeuralNetwork sigmoid = new NeuralNetwork(new Rng(42), new Sigmoid(), 2, 3, 1);
+        NeuralNetwork copy = sigmoid.copy();
+        double[] inputs = {0.3, -0.7};
+
+        assertInstanceOf(Sigmoid.class, copy.getActivation());
+        assertArrayEquals(sigmoid.forward(inputs), copy.forward(inputs), 0.0);
+    }
+
+    @Test
+    public void testWeightsAndBiasesMatchTheGenome() {
+        NeuralNetwork network = new NeuralNetwork(new Rng(42), 5, 6, 2);
+        double[] genome = network.getGenome();
+        double[][][] weights = network.getWeights();
+        double[][] biases = network.getBiases();
+
+        assertEquals(genome[0], weights[0][0][0], 0.0);
+        assertEquals(genome[4], weights[0][0][4], 0.0);
+        assertEquals(genome[5], biases[0][0], 0.0);
+        assertEquals(genome[6], weights[0][1][0], 0.0);
+        assertEquals(genome[genome.length - 1], biases[1][1], 0.0);
+
+        weights[0][0][0] += 1.0;
+        assertEquals(genome[0], network.getWeights()[0][0][0], 0.0, "Returned arrays are copies.");
+    }
+
 
     @Test
     public void testBackward() {

@@ -5,6 +5,7 @@ import org.autonomous_vehicles.util.Rng;
 public class NeuralNetwork {
 
     private final int[] architecture;
+    private final ActivationFunction activation;
     private final Layer[] layers;
     private double[][] lastActivations;
 
@@ -28,6 +29,7 @@ public class NeuralNetwork {
             }
         }
         this.architecture = architecture.clone();
+        this.activation = activation;
         layers = new Layer[architecture.length - 1];
         for (int i = 0; i < architecture.length - 1; i++) {
             layers[i] = Layer.random(architecture[i], architecture[i + 1], activation, rng);
@@ -161,7 +163,7 @@ public class NeuralNetwork {
     }
 
     public NeuralNetwork copy() {
-        NeuralNetwork copy = new NeuralNetwork(new Rng(0), architecture);
+        NeuralNetwork copy = new NeuralNetwork(new Rng(0), activation, architecture);
         copy.setGenome(this.getGenome());
         return copy;
     }
@@ -171,6 +173,46 @@ public class NeuralNetwork {
             System.out.println("Layer " + i + ":");
             layers[i].dump();
         }
+    }
+
+    public ActivationFunction getActivation() {
+        return activation;
+    }
+
+    /**
+     * Weights as [layer][neuron][input], deep copy (used to draw the network).
+     */
+    public double[][][] getWeights() {
+        double[][][] weights = new double[layers.length][][];
+
+        for (int l = 0; l < layers.length; l++) {
+            Neuron[] neurons = layers[l].getNeurons();
+            weights[l] = new double[neurons.length][];
+
+            for (int i = 0; i < neurons.length; i++) {
+                weights[l][i] = neurons[i].weights().clone();
+            }
+        }
+
+        return weights;
+    }
+
+    /**
+     * Biases as [layer][neuron].
+     */
+    public double[][] getBiases() {
+        double[][] biases = new double[layers.length][];
+
+        for (int l = 0; l < layers.length; l++) {
+            Neuron[] neurons = layers[l].getNeurons();
+            biases[l] = new double[neurons.length];
+
+            for (int i = 0; i < neurons.length; i++) {
+                biases[l][i] = neurons[i].bias();
+            }
+        }
+
+        return biases;
     }
 
     public int[] getArchitecture() {

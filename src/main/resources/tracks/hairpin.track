@@ -1,0 +1,47 @@
+# Track n°2: three straights joined by two hairpins, plus a long sweeping turn
+# (driven counter-clockwise; control points spaced evenly so the spline does not overshoot).
+name hairpin
+width 16
+samples 8
+checkpoints 36
+
+# bottom straight, left to right
+point -100  -62
+point  -50  -62
+point    0  -62
+point   50  -62
+point  100  -62
+# first hairpin (centre 100,-41, radius 21)
+point  114.8 -55.8
+point  121   -41
+point  114.8 -26.2
+point  100   -20
+# lower middle straight, right to left
+point   60  -20
+point   20  -20
+point  -10  -20
+point  -36  -20
+# second hairpin (centre -36,-2, radius 18)
+point  -48.7 -14.7
+point  -54    -2
+point  -48.7  10.7
+point  -36    16
+# upper middle straight, left to right
+point  -10   16
+point   20   16
+point   60   16
+point  100   16
+# sweeping right-hand turn back to the top straight (centre 100,39, radius 23)
+point  116.3  22.7
+point  123    39
+point  116.3  55.3
+point  100    62
+# top straight, right to left
+point   50   62
+point    0   62
+point  -50   62
+point -100   62
+# long left turn (centre -100,0, radius 62)
+point -143.8  43.8
+point -162     0
+point -143.8 -43.8

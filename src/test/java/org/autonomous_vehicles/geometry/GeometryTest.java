@@ -2,6 +2,7 @@ package org.autonomous_vehicles.geometry;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -70,6 +71,27 @@ public class GeometryTest {
 
         assertTrue(result.isPresent());
         assertEquals(new Vec2(2, 0), result.get());
+    }
+
+    @Test
+    public void testCollinearDisjointSegmentBehindDoesNotThrow() {
+        Segment first = new Segment(new Vec2(0, 0), new Vec2(4, 0));
+        Segment behind = new Segment(new Vec2(-6, 0), new Vec2(-2, 0));
+        Segment reversed = new Segment(new Vec2(6, 0), new Vec2(1, 0));
+
+        assertTrue(Geometry.intersectSegments(first, behind).isEmpty());
+        assertEquals(new Vec2(1, 0), Geometry.intersectSegments(first, reversed).orElseThrow());
+    }
+
+    @Test
+    public void testPolygonHelpers() {
+        List<Vec2> square = List.of(new Vec2(0, 0), new Vec2(2, 0), new Vec2(2, 2), new Vec2(0, 2));
+
+        assertEquals(4.0, Geometry.signedArea(square), EPSILON);
+        assertEquals(-4.0, Geometry.signedArea(square.reversed()), EPSILON);
+        assertTrue(Geometry.isInsidePolygon(new Vec2(1, 1), square));
+        assertFalse(Geometry.isInsidePolygon(new Vec2(3, 1), square));
+        assertEquals(new Vec2(2, 1), Geometry.closestPointOnSegment(new Vec2(5, 1), new Segment(new Vec2(2, 0), new Vec2(2, 2))));
     }
 
     @Test
