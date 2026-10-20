@@ -29,6 +29,73 @@ public class SimulationTest {
         return simulation;
     }
 
+    private static Simulation fresh(long seed, VehicleModel vehicle) {
+        return new Simulation(Tracks.oval(), randomNetworks(seed, 100), RaySensor.standard(), false,
+                SimulationSettings.defaults().withTrailLength(20), vehicle);
+    }
+
+    private static void assertSameState(Simulation expected, Simulation actual) {
+        assertEquals(expected.getStepCount(), actual.getStepCount());
+        assertEquals(expected.getTime(), actual.getTime(), "The clock is bit-identical.");
+
+        for (int i = 0; i < expected.getAgents().size(); i++) {
+            Car a = expected.getAgents().get(i).getCar();
+            Car b = actual.getAgents().get(i).getCar();
+            assertEquals(a.getX(), b.getX(), "car " + i);
+            assertEquals(a.getY(), b.getY(), "car " + i);
+            assertEquals(a.getAngle(), b.getAngle(), "car " + i);
+            assertEquals(a.getSpeed(), b.getSpeed(), "car " + i);
+            assertEquals(expected.getAgents().get(i).result().distance(), actual.getAgents().get(i).result().distance());
+            assertEquals(expected.getAgents().get(i).getDeathCause(), actual.getAgents().get(i).getDeathCause());
+        }
+    }
+
+    @Test
+    public void testParallelAdvanceIsBitIdenticalToSequentialSteps() {
+        for (VehicleModel vehicle : List.of(KinematicModel.INSTANCE,
+                Vehicles.create("hatchback", TireCompound.SOFT, RaceRules.defaults()))) {
+            Simulation sequential = fresh(11, vehicle);
+            Simulation parallel = fresh(11, vehicle);
+
+            for (int i = 0; i < 150; i++) {
+                sequential.step();
+            }
+
+            assertEquals(150, parallel.advance(150));
+            assertSameState(sequential, parallel);
+
+            while (!sequential.isFinished()) {
+                sequential.step();
+            }
+
+            parallel.runUntilAllDead();
+            assertSameState(sequential, parallel);
+        }
+    }
+
+    @Test
+    public void testAdvanceStopsOnceEveryCarIsStopped() {
+        Simulation simulation = fresh(3, KinematicModel.INSTANCE);
+        simulation.runUntilAllDead();
+        long steps = simulation.getStepCount();
+
+        assertEquals(0, simulation.advance(1000), "Nothing left to simulate.");
+        assertEquals(steps, simulation.getStepCount());
+        assertEquals(0, simulation.advance(0));
+        assertThrows(IllegalArgumentException.class, () -> simulation.advance(-1));
+    }
+
+    @Test
+    public void testOneNetworkDrivingSeveralCarsIsCopiedSoParallelCarsShareNoState() {
+        NeuralNetwork shared = TestDrivers.follower();
+        Simulation simulation = new Simulation(Tracks.oval(), List.of(shared, shared, shared), RaySensor.standard(),
+                false, SimulationSettings.defaults());
+
+        assertSame(shared, simulation.getAgents().get(0).getBrain().getNetwork());
+        assertNotSame(shared, simulation.getAgents().get(1).getBrain().getNetwork());
+        assertArrayEquals(shared.getGenome(), simulation.getAgents().get(2).getBrain().getNetwork().getGenome());
+    }
+
     @Test
     public void testHundredRandomCarsRunWithoutErrorAndMostDieQuickly() {
         Simulation simulation = run(7);

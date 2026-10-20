@@ -8,5 +8,7 @@ public enum DeathCause {
     CRASHED,
     STAGNATED,
     TIMEOUT,
-    FINISHED
+    FINISHED,
+    /** Ran dry and rolled to a stop (only with the fuel mechanic). */
+    OUT_OF_FUEL
 }

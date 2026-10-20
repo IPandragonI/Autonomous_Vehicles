@@ -51,6 +51,46 @@ that without breaking the assignment deliverables.
   hard corners (`CompositeFitnessTest.testRetreatingDoesNotBeatTryingTheCornerWithDefaultWeights`).
 - Grip-limited cars need ~65–75 s per hairpin lap: use a ~90 s time limit and the speed input, or no car laps.
 - The oval is too easy to compare GA settings (random networks lap it); use `hairpin` for experiments.
+- UI frame rate is bound by JavaFX rasterisation, not by Java code: antialiased fills/strokes become software masks the
+  size of their bounding box. Hence `TrackView` keeps the track on a static layer drawn with a 400 px margin and only
+  translated while the camera moves, and draws trails as `fillRect` dots (polylines: 13–35 FPS; dots: 55–58 FPS at ×100,
+  Iris Xe, 1536×864). Measure with the FPS overlay before and after any drawing change.
+- Parallelism: `Simulation.advance`/`runUntilAllDead` step each car on its own thread (bit-identical, tested). On this
+  laptop the speed-up saturates at ~2.5× (6 threads); per-step timings are noisy (±20 %), so compare allocations
+  (`ThreadMXBean.getThreadAllocatedBytes`, 774 B per car-step) or checksums, not single timings.
+- `SimulationController.tick(elapsed)` is real time × speed within a 10 ms budget (`tick()` keeps the fixed
+  speed-steps-per-call mode used by tests); the reached speed is `getEffectiveSpeed()`.
+
+## Race mechanics (dynamic cars only)
+
+- `sim.RaceRules(fuelAutonomy, tyreTemperature)` is a `SimulationConfig` component (`defaults()` = 25 s of fuel +
+  temperature; the kinematic car ignores both). `RaceRules.NONE` keeps `DynamicModel` bit-identical to the model before
+  the mechanics, and `new DynamicModel(spec, tire)` / `Vehicles.create(type, tire)` mean NONE (tests rely on it).
+- Fuel: flow = drive power / (0.30 × 43 MJ/kg) + 2 % idle, the fuel weighs on the car, a dry car has no drive and is
+  stopped with `DeathCause.OUT_OF_FUEL` below 0.1 m/s. Tyres: heat ∝ grip use × distance (×2.5 sliding), cool ∝
+  (T − 25 °C) × (0.006/s + 0.0015/m); grip from `TireCompound.temperatureGrip` (windows soft 80–100, medium 90–110,
+  hard 100–120 °C). Measured on hairpin: champions use 17–26 % of full power; the mechanics lower champion progress
+  after 25 generations (4 seeds: 34.2 none, 29.5 temperature, 22.6 both) because the network does not observe them yet.
+
+## Car state inputs and retraining
+
+- `SimulationConfig.useCarStateInputs` adds `CarBrain.CAR_STATE_INPUTS` = 4 inputs after rays and speed: fuel
+  fraction, tyre temperature relative to the compound window (0.25–0.75 inside, 0.5 = middle; same breakpoints as the
+  grip loss), wear, sliding. `QuickSetup` turns it on (with speed) for dynamic cars. Random populations start with
+  zero weights from those inputs (`NetworkInputs.randomPopulation`): with random weights they hurt (hairpin, 6 seeds:
+  progress 24.4 without, 14.3 random, 29.8 blind start).
+- Retraining: `GeneticAlgorithm(config, seed)` / `Population.seeded` = the champion + mutants. The UI's
+  `SimulationController.retrainFrom` keeps the champion as seed across restarts; `NetworkInputs.adapt` widens it with
+  zero weights when only inputs are added, otherwise the seed is dropped and reported once (`takeDroppedSeed`).
+  Measured: hatchback champion from hairpin retrained on chicane with car state inputs, 10 generations, 4 seeds:
+  progress 59.9 (1.25 laps) vs 27.4 (0.25 laps) from scratch.
+
+## Champion files
+
+- `evolution.Champion` = network + full `SimulationConfig` + generation + fitness, saved as JSON through the
+  dependency-free `util.Json` (doubles round-trip bit-exactly). `Champion.replay()` re-drives exactly the evaluated
+  trajectory (determinism); `SimulationController.startReplay/stopReplay` shows it without touching the training run.
+  `NetworkIO` (.txt, weights only) stays for the assignment deliverables. Bump `Champion.VERSION` on format changes.
 
 ## Roadmap toward the long-term goal
 

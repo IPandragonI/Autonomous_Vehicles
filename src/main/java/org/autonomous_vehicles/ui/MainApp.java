@@ -20,6 +20,8 @@ import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.ToolBar;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
@@ -27,6 +29,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.sim.CarSpec;
 import org.autonomous_vehicles.sim.SimulationSettings;
@@ -35,6 +38,7 @@ import org.autonomous_vehicles.sim.Tracks;
 import org.autonomous_vehicles.sim.Vehicles;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -57,6 +61,7 @@ public class MainApp extends Application {
     private final Label status = new Label();
     private final Label message = new Label();
     private final Label carSummary = new Label();
+    private final FpsCounter fps = new FpsCounter();
 
     private SimulationController controller;
     private TrackView trackView;
@@ -82,7 +87,7 @@ public class MainApp extends Application {
         drawer.setFitToWidth(true);
         drawer.setPrefWidth(350);
 
-        Dashboard dashboard = new Dashboard(390, 250);
+        Dashboard dashboard = new Dashboard(390, 300);
         NetworkView networkView = new NetworkView(390, 300);
 
         BorderPane root = new BorderPane(trackView);
@@ -93,19 +98,40 @@ public class MainApp extends Application {
         loadToolbar();
 
         new AnimationTimer() {
+            private long previous = -1;
+
             @Override
             public void handle(long now) {
-                controller.tick();
-                trackView.draw(controller.frame());
+                fps.frame(now);
+                controller.tick(previous < 0 ? 0.0 : (now - previous) / 1e9);
+                previous = now;
+                trackView.draw(controller.frame(), overlay());
                 statsPanel.refresh(controller);
                 dashboard.draw(controller.getFocusedTelemetry());
-                networkView.draw(controller.getFocusedNetwork());
+                networkView.draw(controller.getFocusedNetwork(), controller.getFocusedInputLabels());
                 status.setText(statusLine());
+                Champion dropped = controller.takeDroppedSeed();
+
+                if (dropped != null) {
+                    message.setText("Random population: the champion's network (" + dropped.config().architectureLabel()
+                            + ") does not fit " + controller.getConfig().architectureLabel()
+                            + " (other rays or hidden layers, or fewer inputs; new inputs alone are added)");
+                }
             }
         }.start();
 
         stage.setTitle("Autonomous Vehicles");
-        stage.setScene(new Scene(root, 1500, 900));
+        Scene scene = new Scene(root, 1500, 900);
+        // F11 toggles full screen (Esc also leaves it, JavaFX default); the window starts in full screen.
+        scene.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (event.getCode() == KeyCode.F11) {
+                stage.setFullScreen(!stage.isFullScreen());
+                event.consume();
+            }
+        });
+        stage.setScene(scene);
+        stage.setFullScreenExitHint("Full screen · F11 or Esc to leave");
+        stage.setFullScreen(true);
         stage.show();
     }
 
@@ -189,7 +215,144 @@ public class MainApp extends Application {
 
         return new ToolBar(play, step, restart, new Separator(), new Label("Speed"), speedBox, new Separator(),
                 new Label("Track"), trackBox, importTrack, new Label("Car"), carBox, new Label("Tyres"), tireBox,
-                spacer, viewMenu(stage), follow, settings, drive);
+                spacer, championMenu(stage), viewMenu(stage), follow, settings, drive);
+    }
+
+    private MenuButton championMenu(Stage stage) {
+        MenuItem save = new MenuItem("Save champion (.json)…");
+        save.setOnAction(event -> saveChampion(stage, true));
+        MenuItem saveWeights = new MenuItem("Save weights only (.txt, NetworkIO)…");
+        saveWeights.setOnAction(event -> saveChampion(stage, false));
+        MenuItem load = new MenuItem("Load champion and replay…");
+        load.setOnAction(event -> loadChampion(stage));
+        MenuItem back = new MenuItem("Back to training");
+        back.setOnAction(event -> {
+            controller.stopReplay();
+            loadToolbar();
+            trackView.resetView();
+            message.setText("Training resumed where it was left");
+        });
+
+        MenuItem retrain = new MenuItem("Retrain a population from a champion…");
+        retrain.setOnAction(event -> retrainFromChampion(stage));
+        MenuItem random = new MenuItem("Back to random populations");
+        random.setOnAction(event -> {
+            controller.clearSeed();
+            afterRestart();
+            message.setText("New random population (the champion is no longer the seed)");
+        });
+
+        MenuButton menu = new MenuButton("Champion", null, save, saveWeights, new SeparatorMenuItem(), load, back,
+                new SeparatorMenuItem(), retrain, random);
+        menu.setTooltip(new Tooltip("Best network ever evaluated: save it with its configuration, replay a saved one, "
+                + "or breed a new population from it."));
+        menu.setOnShowing(event -> {
+            boolean none = controller.getAlgorithm().getChampion() == null;
+            save.setDisable(none);
+            saveWeights.setDisable(none);
+            back.setDisable(!controller.isReplaying());
+            random.setDisable(controller.getSeed() == null);
+        });
+        return menu;
+    }
+
+    /**
+     * Generation 0 becomes the champion plus mutants of it, with the champion's configuration; the track, car and
+     * settings can then be changed as usual (the champion stays the seed while the network shape fits).
+     */
+    private void retrainFromChampion(Stage stage) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Champion to retrain a population from");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Champion", "*" + Champion.EXTENSION));
+        File file = chooser.showOpenDialog(stage);
+
+        if (file == null) {
+            return;
+        }
+
+        try {
+            Champion champion = Champion.load(file.toPath());
+            controller.retrainFrom(champion);
+            afterRestart();
+            message.setText(String.format(Locale.ROOT, "Retraining from %s (generation %d, fitness %.2f): car 0 is "
+                    + "the champion, the others are mutants of it", file.getName(), champion.generation(),
+                    champion.fitness()));
+        } catch (IOException | IllegalArgumentException e) {
+            message.setText("Cannot retrain: " + e.getMessage());
+        }
+    }
+
+    /** Puts every panel in line with a new run (new configuration, generation 0). */
+    private void afterRestart() {
+        statsPanel.reload(controller.getHistory());
+        controlPanel.refresh();
+        loadToolbar();
+        trackView.resetView();
+    }
+
+    private void saveChampion(Stage stage, boolean json) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle(json ? "Save the champion and its configuration" : "Save the champion's weights");
+        chooser.setInitialFileName(String.format(Locale.ROOT, "champion_gen_%03d%s",
+                controller.getAlgorithm().getChampionGeneration(), json ? Champion.EXTENSION : ".txt"));
+        File file = chooser.showSaveDialog(stage);
+
+        if (file == null) {
+            return;
+        }
+
+        try {
+            if (json) {
+                Champion.of(controller.getAlgorithm()).save(file.toPath());
+            } else {
+                controller.getAlgorithm().saveChampion(file.toPath());
+            }
+
+            message.setText("Champion saved to " + file.getName());
+        } catch (IOException | IllegalStateException e) {
+            message.setText("Cannot save: " + e.getMessage());
+        }
+    }
+
+    private void loadChampion(Stage stage) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Champion to replay");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Champion", "*" + Champion.EXTENSION));
+        File file = chooser.showOpenDialog(stage);
+
+        if (file == null) {
+            return;
+        }
+
+        try {
+            Champion champion = Champion.load(file.toPath());
+            controller.startReplay(champion);
+            trackView.setCarType(champion.config().carType());
+            trackView.resetView();
+            message.setText("Replaying " + file.getName() + " · Champion ▸ Back to training to resume");
+        } catch (IOException | IllegalArgumentException e) {
+            message.setText("Cannot load: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Text drawn over the top-left corner of the track: FPS, and what is replayed.
+     */
+    private List<String> overlay() {
+        Champion replay = controller.getReplay();
+        double effective = controller.getEffectiveSpeed();
+        String head = fps.label() + (Double.isNaN(effective) ? "" : String.format(Locale.ROOT, "  ·  sim ×%s",
+                effective >= 10 ? String.format(Locale.ROOT, "%.0f", effective)
+                        : String.format(Locale.ROOT, "%.1f", effective)));
+
+        if (replay == null) {
+            return List.of(head);
+        }
+
+        return List.of(head, String.format(Locale.ROOT, "REPLAY · champion of generation %d · fitness %.2f",
+                replay.generation(), replay.fitness()),
+                Tracks.displayName(replay.config().tracks().getFirst()) + " · " + replay.config().carType()
+                        + " · " + replay.config().architectureLabel());
     }
 
     private MenuButton viewMenu(Stage stage) {
@@ -230,7 +393,8 @@ public class MainApp extends Application {
         VBox carTab = new VBox(10, dashboard, carSummary, carHint);
         carTab.setPadding(new Insets(10));
 
-        Label brainHint = new Label("Left: the 5 distance sensors (and speed). Right: steering and throttle. "
+        Label brainHint = new Label("Left: the distance sensors, then speed, fuel, tyre temperature (0.5 = middle of "
+                + "the grip window), wear and sliding when enabled. Right: steering and throttle. "
                 + "Lines: blue = positive weight, red = negative, thicker = stronger. Circles light up with activity.");
         brainHint.setWrapText(true);
         brainHint.setStyle("-fx-text-fill: #57606a;");
@@ -258,11 +422,21 @@ public class MainApp extends Application {
     }
 
     private String statusLine() {
+        if (controller.isReplaying()) {
+            double lap = controller.getFocusedAgent() == null ? Double.NaN
+                    : controller.getFocusedAgent().result().bestLapTime();
+            return String.format(Locale.ROOT, "Replay  ·  t = %.1f s  ·  lap %s  ·  training paused at generation %d",
+                    controller.getDisplayedSimulation().getTime(), Double.isNaN(lap) ? "–" : Dashboard.lapTime(lap),
+                    controller.getGeneration());
+        }
+
         double bestLap = controller.getHistory().bestLapTimeEver();
         return String.format(Locale.ROOT, "Generation %d  ·  %d / %d cars on track  ·  best lap %s  ·  %s",
                 controller.getGeneration(), controller.getAliveCount(), controller.getConfig().populationSize(),
                 Double.isNaN(bestLap) ? "–" : Dashboard.lapTime(bestLap),
-                controller.hasSelection() ? "following your selected car" : "showing the best car");
+                (controller.hasSelection() ? "following your selected car" : "showing the best car")
+                        + (controller.getSeed() == null ? "" : String.format(Locale.ROOT,
+                        "  ·  bred from a champion of generation %d", controller.getSeed().generation())));
     }
 
     /** Puts the toolbar in line with the controller's configuration without triggering a change. */

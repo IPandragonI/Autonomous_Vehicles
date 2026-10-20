@@ -21,6 +21,7 @@ public class Evaluator {
     private final List<Track> tracks;
     private final RaySensor sensor;
     private final boolean useSpeed;
+    private final boolean useCarState;
     private final SimulationSettings settings;
     private final VehicleModel vehicle;
     private FitnessFunction fitness;
@@ -32,6 +33,14 @@ public class Evaluator {
 
     public Evaluator(List<Track> tracks, RaySensor sensor, boolean useSpeed, SimulationSettings settings,
                      FitnessFunction fitness, VehicleModel vehicle) {
+        this(tracks, sensor, useSpeed, false, settings, fitness, vehicle);
+    }
+
+    /**
+     * @param useCarState the networks also read the car state (see {@code CarBrain.carState})
+     */
+    public Evaluator(List<Track> tracks, RaySensor sensor, boolean useSpeed, boolean useCarState,
+                     SimulationSettings settings, FitnessFunction fitness, VehicleModel vehicle) {
         if (tracks == null || tracks.isEmpty() || sensor == null || settings == null || fitness == null
                 || vehicle == null) {
             throw new IllegalArgumentException("Evaluator needs at least one track, a sensor, settings and a fitness.");
@@ -40,6 +49,7 @@ public class Evaluator {
         this.tracks = List.copyOf(tracks);
         this.sensor = sensor;
         this.useSpeed = useSpeed;
+        this.useCarState = useCarState;
         this.settings = settings;
         this.fitness = fitness;
         this.vehicle = vehicle;
@@ -63,7 +73,7 @@ public class Evaluator {
         List<Simulation> simulations = new ArrayList<>();
 
         for (Track track : tracks) {
-            simulations.add(new Simulation(track, networks, sensor, useSpeed, settings, vehicle));
+            simulations.add(new Simulation(track, networks, sensor, useSpeed, useCarState, settings, vehicle));
         }
 
         return simulations;
@@ -140,5 +150,9 @@ public class Evaluator {
 
     public boolean usesSpeed() {
         return useSpeed;
+    }
+
+    public boolean usesCarState() {
+        return useCarState;
     }
 }

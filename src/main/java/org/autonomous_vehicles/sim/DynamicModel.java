@@ -13,9 +13,16 @@ package org.autonomous_vehicles.sim;
  *     (μ from the car, the compound and its wear). Beyond it the car understeers: the turn widens, speed is scrubbed
  *     and the tyres wear four times faster. Braking is limited by the brakes and by the grip.</li>
  *     <li><b>Controls</b>: throttle > 0 accelerates; throttle < 0 brakes, or engages reverse below 0.5 m/s.</li>
+ *     <li><b>Fuel</b> ({@link RaceRules#fuelAutonomy}): the engine burns power / (thermal efficiency × fuel energy),
+ *     with power = drive force × speed (so consumption grows with both acceleration and speed; wheelspin wastes
+ *     fuel) plus a small idle flow. The fuel weighs on the car. A dry car loses all drive and coasts to a stop.</li>
+ *     <li><b>Tyre temperature</b> ({@link RaceRules#tyreTemperature}): the tread heats in proportion to the share of
+ *     grip used × the distance driven (×{@link #SLIDING_HEAT_FACTOR} while sliding) and cools towards the air
+ *     temperature, faster with speed (airflow). Grip follows {@link TireCompound#temperatureGrip}.</li>
  * </ul>
  * The car's heading stays aligned with its velocity (no drift angle): at low speed the model reduces to the
- * kinematic bicycle of {@link CarPhysics}. Stateless: the gear, rpm and wear are stored in the {@link Car}.
+ * kinematic bicycle of {@link CarPhysics}. Stateless: the gear, rpm, wear, fuel and temperature are stored in the
+ * {@link Car}. With {@link RaceRules#NONE} the arithmetic is exactly that of the model before fuel and temperature.
  */
 public final class DynamicModel implements VehicleModel {
 
@@ -28,18 +35,48 @@ public final class DynamicModel implements VehicleModel {
     /** Share of the excess grip demand turned into extra deceleration while sliding. */
     public static final double SCRUB_FACTOR = 0.3;
 
+    /** Share of the fuel energy a petrol engine turns into work. */
+    public static final double THERMAL_EFFICIENCY = 0.30;
+    /** Lower heating value of petrol, J/kg. */
+    public static final double FUEL_ENERGY = 43e6;
+    /** Fuel flow at idle, as a share of the full-power flow. */
+    public static final double IDLE_POWER_FRACTION = 0.02;
+
+    /** Air (and track) temperature, °C: the temperature tyres cool towards. */
+    public static final double AMBIENT_TEMPERATURE = 25.0;
+    /** Tyres leave tyre blankets warm but below every compound's window: the first bends are slippery. */
+    public static final double START_TYRE_TEMPERATURE = 60.0;
+    /** Heating at full grip use, °C per metre driven. */
+    public static final double TYRE_HEATING = 0.20;
+    public static final double SLIDING_HEAT_FACTOR = 2.5;
+    /** Cooling rate at a standstill, per second, times the excess over the air temperature. */
+    public static final double TYRE_COOLING_STILL = 0.006;
+    /** Extra cooling per metre driven (airflow), times the excess over the air temperature. */
+    public static final double TYRE_COOLING_AIRFLOW = 0.0015;
+
     private final CarSpec spec;
     private final TireCompound tire;
+    private final RaceRules rules;
     private final double topSpeed;
+    private final double fullPowerFuelFlow;
 
+    /**
+     * Model without fuel and tyre temperature ({@link RaceRules#NONE}).
+     */
     public DynamicModel(CarSpec spec, TireCompound tire) {
-        if (spec == null || tire == null) {
-            throw new IllegalArgumentException("Car spec and tyre compound must not be null.");
+        this(spec, tire, RaceRules.NONE);
+    }
+
+    public DynamicModel(CarSpec spec, TireCompound tire, RaceRules rules) {
+        if (spec == null || tire == null || rules == null) {
+            throw new IllegalArgumentException("Car spec, tyre compound and race rules must not be null.");
         }
 
         this.spec = spec;
         this.tire = tire;
+        this.rules = rules;
         this.topSpeed = computeTopSpeed();
+        this.fullPowerFuelFlow = spec.peakPower() / (THERMAL_EFFICIENCY * FUEL_ENERGY);
     }
 
     @Override
@@ -48,6 +85,26 @@ public final class DynamicModel implements VehicleModel {
         car.setEngineRpm(spec.idleRpm());
         car.setTireWear(0.0);
         car.setSliding(false);
+
+        if (rules.limitedFuel()) {
+            car.fillFuel(startFuel());
+        }
+
+        car.setTireTemperature(rules.tyreTemperature() ? START_TYRE_TEMPERATURE : AMBIENT_TEMPERATURE);
+    }
+
+    /**
+     * Fuel loaded at the start, kg: {@link RaceRules#fuelAutonomy} seconds at full power (0 with unlimited fuel).
+     */
+    public double startFuel() {
+        return rules.fuelAutonomy() * fullPowerFuelFlow;
+    }
+
+    /**
+     * Fuel burnt per second at full power, kg/s.
+     */
+    public double fullPowerFuelFlow() {
+        return fullPowerFuelFlow;
     }
 
     @Override
@@ -66,17 +123,27 @@ public final class DynamicModel implements VehicleModel {
 
         double v = car.getSpeed();
         double throttle = controls.throttle();
-        double normalAcceleration = GRAVITY + downforce(v) / spec.mass();
+        // Unlimited fuel adds 0.0, which leaves the mass (and every division by it) bit-identical.
+        double mass = spec.mass() + car.getFuel();
+        double normalAcceleration = GRAVITY + downforce(v) / mass;
         double mu = frictionCoefficient(car.getTireWear());
+
+        if (rules.tyreTemperature()) {
+            mu *= tire.temperatureGrip(car.getTireTemperature());
+        }
+
         double gripLimit = mu * normalAcceleration;
         boolean sliding = false;
         boolean reversing = throttle < 0.0 && v <= REVERSE_THRESHOLD_SPEED;
+        boolean dry = car.isOutOfFuel();
+        double engineAcceleration = 0.0;
         double tyreAcceleration;
 
         if (reversing) {
             car.setGear(-1);
             car.setEngineRpm(spec.idleRpm());
-            tyreAcceleration = v > -MAX_REVERSE_SPEED ? throttle * Math.min(REVERSE_ACCELERATION, gripLimit) : 0.0;
+            tyreAcceleration = v > -MAX_REVERSE_SPEED && !dry ? throttle * Math.min(REVERSE_ACCELERATION, gripLimit) : 0.0;
+            engineAcceleration = Math.abs(tyreAcceleration);
         } else if (throttle < 0.0 || v < 0.0) {
             // Braking: against the motion, limited by the brakes and by the grip (beyond it the wheels lock).
             double requested = Math.abs(throttle) * spec.maxBrakeDeceleration();
@@ -85,8 +152,9 @@ public final class DynamicModel implements VehicleModel {
             selectGear(car, v);
         } else {
             selectGear(car, v);
-            double driveAcceleration = throttle * driveForce(car.getEngineRpm(), car.getGear()) / spec.mass();
+            double driveAcceleration = dry ? 0.0 : throttle * driveForce(car.getEngineRpm(), car.getGear()) / mass;
             double traction = mu * spec.drivenAxleLoadShare() * normalAcceleration;
+            engineAcceleration = driveAcceleration; // wheelspin still burns the fuel
 
             if (driveAcceleration > traction) {
                 driveAcceleration = traction;
@@ -99,6 +167,7 @@ public final class DynamicModel implements VehicleModel {
         double curvature = Math.tan(controls.steer() * spec.maxSteeringAngle()) / spec.wheelbase();
         double lateralAcceleration = v * v * curvature;
         double combined = Math.hypot(tyreAcceleration, lateralAcceleration);
+        double gripUse = gripLimit > 0.0 ? Math.min(1.0, combined / gripLimit) : 1.0;
         double scrub = 0.0;
 
         if (combined > gripLimit) {
@@ -109,7 +178,7 @@ public final class DynamicModel implements VehicleModel {
             sliding = true;
         }
 
-        double acceleration = tyreAcceleration - Math.signum(v) * (resistance(v) / spec.mass() + scrub);
+        double acceleration = tyreAcceleration - Math.signum(v) * (resistance(v, mass) / mass + scrub);
         double newSpeed = v + acceleration * dt;
 
         // Brakes and resistances stop the car, they never push it the other way.
@@ -132,6 +201,30 @@ public final class DynamicModel implements VehicleModel {
         double wearRate = tire.wearPerKilometre() * (sliding ? TireCompound.SLIDING_WEAR_FACTOR : 1.0);
         car.setTireWear(car.getTireWear() + Math.abs(newSpeed) * dt / 1000.0 * wearRate);
         car.setSliding(sliding);
+
+        if (car.hasFuelLimit()) {
+            double power = engineAcceleration * mass * Math.abs(v) / spec.drivetrainEfficiency();
+            double flow = Math.min(power / (THERMAL_EFFICIENCY * FUEL_ENERGY), fullPowerFuelFlow)
+                    + (dry ? 0.0 : IDLE_POWER_FRACTION * fullPowerFuelFlow);
+            car.setFuel(car.getFuel() - flow * dt);
+        }
+
+        if (rules.tyreTemperature()) {
+            car.setTireTemperature(nextTyreTemperature(car.getTireTemperature(), gripUse, sliding, newSpeed, dt));
+        }
+    }
+
+    /**
+     * Tread temperature after {@code dt}: heating ∝ grip use × distance (more while sliding), cooling ∝ the excess
+     * over the air temperature, faster with speed. With these rates a car cornering near the limit settles around
+     * 100 °C (inside every window) whatever its speed, a car that slides repeatedly overheats, and a car cruising
+     * on a straight cools down with a time constant of ~20 s at 100 km/h.
+     */
+    static double nextTyreTemperature(double celsius, double gripUse, boolean sliding, double speed, double dt) {
+        double distance = Math.abs(speed) * dt;
+        double heating = TYRE_HEATING * gripUse * (sliding ? SLIDING_HEAT_FACTOR : 1.0) * distance;
+        double cooling = (celsius - AMBIENT_TEMPERATURE) * (TYRE_COOLING_STILL * dt + TYRE_COOLING_AIRFLOW * distance);
+        return celsius + heating - cooling;
     }
 
     /**
@@ -184,7 +277,11 @@ public final class DynamicModel implements VehicleModel {
      * Drag plus rolling resistance, N (always opposing the motion).
      */
     private double resistance(double speed) {
-        double rolling = speed != 0.0 ? spec.rollingResistance() * spec.mass() * GRAVITY : 0.0;
+        return resistance(speed, spec.mass());
+    }
+
+    private double resistance(double speed, double mass) {
+        double rolling = speed != 0.0 ? spec.rollingResistance() * mass * GRAVITY : 0.0;
         return 0.5 * AIR_DENSITY * spec.dragArea() * speed * speed + rolling;
     }
 
@@ -250,5 +347,9 @@ public final class DynamicModel implements VehicleModel {
 
     public TireCompound getTire() {
         return tire;
+    }
+
+    public RaceRules getRules() {
+        return rules;
     }
 }

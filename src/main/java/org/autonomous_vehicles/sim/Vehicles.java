@@ -53,6 +53,13 @@ public final class Vehicles {
      * @param tire ignored by the kinematic model (unlimited grip)
      */
     public static VehicleModel create(String type, TireCompound tire) {
+        return create(type, tire, RaceRules.NONE);
+    }
+
+    /**
+     * @param rules fuel and tyre temperature, ignored by the kinematic model
+     */
+    public static VehicleModel create(String type, TireCompound tire, RaceRules rules) {
         if (KINEMATIC.equals(type)) {
             return KinematicModel.INSTANCE;
         }
@@ -63,6 +70,6 @@ public final class Vehicles {
             throw new IllegalArgumentException("Unknown car type '" + type + "'; known types: " + TYPES);
         }
 
-        return new DynamicModel(spec, tire);
+        return new DynamicModel(spec, tire, rules);
     }
 }

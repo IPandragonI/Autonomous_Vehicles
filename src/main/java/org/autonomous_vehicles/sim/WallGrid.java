@@ -17,6 +17,8 @@ final class WallGrid {
 
     private static final double CELL_SIZE = 10.0;
     private static final double EPSILON = 1e-9;
+    static final double BOX_MARGIN = 1e-3;
+    static final double MIN_FILTERED_MOVE = 1e-3;
 
     private final double[] x1;
     private final double[] y1;
@@ -185,14 +187,28 @@ final class WallGrid {
         return ex * ex + ey * ey;
     }
 
+    /**
+     * Before the exact (allocating) segment test, walls whose bounding box is more than {@link #BOX_MARGIN} away
+     * from the move's are skipped. {@link Geometry#intersectSegments} accepts points up to ~1e-9 / |move| off the
+     * move (nearly parallel case), so the filter is only used for moves of at least {@link #MIN_FILTERED_MOVE}:
+     * there the tolerance is below 1e-6 m, far inside the margin, and the answer is exactly the unfiltered one.
+     */
     boolean segmentHitsWall(Vec2 from, Vec2 to) {
         Segment move = new Segment(from, to);
+        boolean filter = from.distanceTo(to) >= MIN_FILTERED_MOVE;
+        double lowX = Math.min(from.x(), to.x()) - BOX_MARGIN, highX = Math.max(from.x(), to.x()) + BOX_MARGIN;
+        double lowY = Math.min(from.y(), to.y()) - BOX_MARGIN, highY = Math.max(from.y(), to.y()) + BOX_MARGIN;
         int c0 = column(Math.min(from.x(), to.x())), c1 = column(Math.max(from.x(), to.x()));
         int r0 = row(Math.min(from.y(), to.y())), r1 = row(Math.max(from.y(), to.y()));
 
         for (int c = c0; c <= c1; c++) {
             for (int r = r0; r <= r1; r++) {
                 for (int wall : cells[r * columns + c]) {
+                    if (filter && (Math.max(x1[wall], x2[wall]) < lowX || Math.min(x1[wall], x2[wall]) > highX
+                            || Math.max(y1[wall], y2[wall]) < lowY || Math.min(y1[wall], y2[wall]) > highY)) {
+                        continue;
+                    }
+
                     if (Geometry.intersectSegments(move, walls.get(wall)).isPresent()) {
                         return true;
                     }

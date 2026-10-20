@@ -23,6 +23,7 @@ import org.autonomous_vehicles.sim.DeathCause;
 import org.autonomous_vehicles.sim.KinematicModel;
 import org.autonomous_vehicles.sim.LapTracker;
 import org.autonomous_vehicles.sim.RaySensor;
+import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.TireCompound;
 import org.autonomous_vehicles.sim.Track;
 import org.autonomous_vehicles.sim.Tracks;
@@ -47,7 +48,7 @@ public class ManualDriveView {
     private final Set<KeyCode> pressed = EnumSet.noneOf(KeyCode.class);
     private final RaySensor sensor = RaySensor.standard();
     private final TrackView view = new TrackView();
-    private final Dashboard dashboard = new Dashboard(390, 250);
+    private final Dashboard dashboard = new Dashboard(390, 300);
     private final Label message = new Label("Arrows: steer, accelerate, brake (hold to reverse) · R: restart · "
             + "mouse wheel: zoom");
 
@@ -95,12 +96,12 @@ public class ManualDriveView {
         tireChoice.disableProperty().bind(carChoice.valueProperty().isEqualTo(Vehicles.KINEMATIC));
 
         carChoice.valueProperty().addListener((obs, old, type) -> {
-            vehicle = Vehicles.create(type, tireChoice.getValue());
+            vehicle = Vehicles.create(type, tireChoice.getValue(), RaceRules.defaults());
             view.setCarType(type);
             restart();
         });
         tireChoice.valueProperty().addListener((obs, old, compound) -> {
-            vehicle = Vehicles.create(carChoice.getValue(), compound);
+            vehicle = Vehicles.create(carChoice.getValue(), compound, RaceRules.defaults());
             restart();
         });
 

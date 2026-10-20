@@ -1,10 +1,12 @@
 package org.autonomous_vehicles.ui;
 
+import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.GenerationStats;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.geometry.Vec2;
 import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.CarAgent;
+import org.autonomous_vehicles.sim.Simulation;
 import org.autonomous_vehicles.sim.SimulationSettings;
 import org.autonomous_vehicles.util.Rng;
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,211 @@ public class SimulationControllerTest {
         while (controller.getGeneration() == generation) {
             controller.step();
         }
+    }
+
+    /** Steps the displayed simulation advanced during {@code action}, checking no generation ended meanwhile. */
+    private static long stepsDuring(SimulationController controller, Runnable action) {
+        int generation = controller.getGeneration();
+        long before = controller.getDisplayedSimulation().getStepCount();
+        action.run();
+        assertEquals(generation, controller.getGeneration(), "The count is only meaningful within a generation.");
+        return controller.getDisplayedSimulation().getStepCount() - before;
+    }
+
+    @Test
+    public void testRealTimeTickSimulatesElapsedTimesSpeed() {
+        SimulationController controller = new SimulationController(config(), () -> 0L);
+        controller.play();
+
+        assertEquals(1, stepsDuring(controller, () -> controller.tick(1.0 / 60.0)), "×1 = real time.");
+
+        controller.setSpeed(10);
+        assertEquals(40, stepsDuring(controller, () -> controller.tick(1.0 / 15.0)));
+        assertEquals(10.0, controller.getEffectiveSpeed(), 1e-9);
+    }
+
+    @Test
+    public void testFractionsOfAStepAreCarriedToTheNextImage() {
+        SimulationController controller = new SimulationController(config(), () -> 0L);
+        controller.play();
+
+        assertEquals(0, stepsDuring(controller, () -> controller.tick(1.0 / 120.0)));
+        assertEquals(1, stepsDuring(controller, () -> controller.tick(1.0 / 120.0)));
+    }
+
+    @Test
+    public void testFrameBudgetStopsTheWorkAndDropsTheBacklog() {
+        long[] now = {0};
+        // Every clock reading is 6 ms later: the budget (10 ms) is spent after the second batch.
+        SimulationController controller = new SimulationController(config(), () -> now[0] += 6_000_000L);
+        controller.setSpeed(100);
+        controller.play();
+
+        assertEquals(2 * SimulationController.BATCH_STEPS, stepsDuring(controller, () -> controller.tick(0.1)));
+        assertEquals(0, stepsDuring(controller, () -> controller.tick(0.0)), "The unsimulated time is dropped.");
+        assertTrue(controller.getEffectiveSpeed() < 100, "The reached speed is reported: " + controller.getEffectiveSpeed());
+    }
+
+    @Test
+    public void testLongPausesAreNotCaughtUpAndPausedTicksDoNothing() {
+        SimulationController controller = new SimulationController(config(), () -> 0L);
+
+        assertEquals(0, stepsDuring(controller, () -> controller.tick(1.0)));
+        assertTrue(Double.isNaN(controller.getEffectiveSpeed()));
+
+        controller.play();
+        long steps = stepsDuring(controller, () -> controller.tick(5.0));
+        assertEquals(Math.round(SimulationController.MAX_FRAME_GAP * 60), steps);
+        assertThrows(IllegalArgumentException.class, () -> controller.tick(-1));
+        assertThrows(IllegalArgumentException.class, () -> controller.tick(Double.NaN));
+    }
+
+    @Test
+    public void testFastTicksBreedGenerationsLikeSingleSteps() {
+        SimulationController fast = new SimulationController(config(), () -> 0L);
+        SimulationController slow = new SimulationController(config());
+        fast.setSpeed(1000);
+        fast.play();
+
+        fast.tick(SimulationController.MAX_FRAME_GAP);
+
+        assertTrue(fast.getGeneration() >= 1, "15 000 steps cover several 10 s generations.");
+
+        while (slow.getGeneration() < fast.getGeneration()) {
+            slow.step();
+        }
+
+        assertEquals(slow.getHistory().last().bestFitness(), fast.getHistory().last().bestFitness(),
+                "Batching never changes the results.");
+    }
+
+    @Test
+    public void testRetrainingBreedsFromTheChampionAndKeepsItAcrossRestarts() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        Champion champion = Champion.of(controller.getAlgorithm());
+        SimulationConfig other = config().toBuilder().seed(99).tracks("chicane").build();
+        controller.applyConfig(other);
+
+        controller.retrainFrom(champion);
+
+        assertSame(champion, controller.getSeed());
+        assertEquals(champion.config(), controller.getConfig(), "The champion's configuration is restored.");
+        assertEquals(0, controller.getGeneration());
+        assertArrayEquals(champion.network().getGenome(),
+                controller.getDisplayedSimulation().getAgents().getFirst().getBrain().getNetwork().getGenome(),
+                "Car 0 drives the champion.");
+
+        controller.reset(); // Restart button
+        assertArrayEquals(champion.network().getGenome(),
+                controller.getDisplayedSimulation().getAgents().getFirst().getBrain().getNetwork().getGenome());
+
+        controller.applyConfig(controller.getConfig().toBuilder().tracks("hairpin").build()); // same network shape
+        assertSame(champion, controller.getSeed(), "Another track keeps the seed.");
+        assertNull(controller.takeDroppedSeed());
+    }
+
+    @Test
+    public void testNewInputsWidenTheSeedButOtherHiddenLayersDropItOnce() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        Champion champion = Champion.of(controller.getAlgorithm());
+        controller.retrainFrom(champion);
+
+        controller.applyConfig(controller.getConfig().toBuilder().useSpeedInput(true).useCarStateInputs(true).build());
+
+        assertSame(champion, controller.getSeed(), "Speed and car state inputs are added with zero weights.");
+        NeuralNetwork car0 = controller.getDisplayedSimulation().getAgents().getFirst().getBrain().getNetwork();
+        assertEquals(5 + 1 + 4, car0.getArchitecture()[0]);
+
+        controller.applyConfig(controller.getConfig().toBuilder().hiddenLayers(8).build());
+
+        assertNull(controller.getSeed(), "Other hidden layers: the champion's network does not fit.");
+        assertSame(champion, controller.takeDroppedSeed());
+        assertNull(controller.takeDroppedSeed(), "Reported once.");
+    }
+
+    @Test
+    public void testFailedRetrainingLeavesTheRunUntouchedAndSeedCanBeCleared() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        Champion champion = Champion.of(controller.getAlgorithm());
+        Champion elsewhere = new Champion(champion.config().toBuilder().tracks("not-imported").build(),
+                champion.network(), champion.generation(), champion.fitness());
+        SimulationConfig before = controller.getConfig();
+        int generation = controller.getGeneration();
+
+        assertThrows(IllegalArgumentException.class, () -> controller.retrainFrom(elsewhere));
+        assertEquals(before, controller.getConfig());
+        assertEquals(generation, controller.getGeneration());
+        assertNull(controller.getSeed());
+
+        controller.retrainFrom(champion);
+        controller.clearSeed();
+        assertNull(controller.getSeed());
+        assertEquals(0, controller.getGeneration());
+    }
+
+    @Test
+    public void testFocusedInputLabelsNameEveryNetworkInput() {
+        SimulationController controller = new SimulationController(config().toBuilder().useCarStateInputs(true).build());
+
+        assertEquals(List.of("R 90°", "R 45°", "0°", "L 45°", "L 90°", "fuel", "tyre °C", "wear", "slide"),
+                controller.getFocusedInputLabels());
+    }
+
+    @Test
+    public void testReplayShowsTheChampionAloneThenTrainingResumesUntouched() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        controller.step();
+        Simulation training = controller.getDisplayedSimulation();
+        Champion champion = Champion.of(controller.getAlgorithm());
+
+        controller.startReplay(champion);
+
+        assertTrue(controller.isReplaying());
+        assertSame(champion, controller.getReplay());
+        assertEquals(1, controller.getDisplayedSimulation().getAgents().size());
+        assertEquals(0, controller.getDisplayedSimulation().getStepCount());
+
+        controller.stopReplay();
+
+        assertFalse(controller.isReplaying());
+        assertSame(training, controller.getDisplayedSimulation());
+        assertEquals(1, controller.getDisplayedSimulation().getStepCount());
+        assertEquals(1, controller.getGeneration());
+    }
+
+    @Test
+    public void testReplayLoopsWithoutBreedingAndMatchesTheEvaluation() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        Champion champion = Champion.of(controller.getAlgorithm());
+        controller.startReplay(champion);
+        Simulation first = controller.getDisplayedSimulation();
+
+        while (controller.getDisplayedSimulation() == first) {
+            controller.step();
+        }
+
+        assertTrue(first.isFinished());
+        assertEquals(controller.getAlgorithm().getChampion().getPrimaryResult().distance(),
+                first.getAgents().getFirst().result().distance());
+        assertEquals(1, controller.getGeneration(), "A replay never breeds a generation.");
+        assertEquals(0, controller.getDisplayedSimulation().getStepCount(), "The replay starts again.");
+    }
+
+    @Test
+    public void testResetEndsTheReplay() {
+        SimulationController controller = new SimulationController(config());
+        finishGeneration(controller);
+        controller.startReplay(Champion.of(controller.getAlgorithm()));
+
+        controller.reset();
+
+        assertFalse(controller.isReplaying());
+        assertEquals(config().populationSize(), controller.getDisplayedSimulation().getAgents().size());
     }
 
     @Test

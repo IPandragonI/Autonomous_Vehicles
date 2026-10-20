@@ -11,7 +11,9 @@ import javafx.scene.text.TextAlignment;
 import org.autonomous_vehicles.sim.DeathCause;
 import org.autonomous_vehicles.sim.TireCompound;
 
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Car dashboard: rev counter with redline, engaged gear, speed, pedals, steering, tyre wear and lap timing.
@@ -23,6 +25,7 @@ public class Dashboard extends Canvas {
     private static final Color DIM = Color.web("#8b949e");
     private static final double ARC_START = 225;
     private static final double ARC_EXTENT = -270;
+    private static final Map<Double, Font> FONTS = new HashMap<>();
 
     public Dashboard(double width, double height) {
         super(width, height);
@@ -46,8 +49,50 @@ public class Dashboard extends Canvas {
         tachometer(g, t, cx, cy, r);
         speed(g, t, w - 95, 78);
         pedals(g, t, w - 170, 145, 140);
-        tyres(g, t, 12, h - 30, w - 24);
-        lap(g, t, w / 2, h - 52);
+        lap(g, t, w / 2, h - 86);
+        tyres(g, t, 12, h - 62, w - 24);
+        fuelAndTemperature(g, t, 12, h - 30, w - 24);
+    }
+
+    /**
+     * Fuel gauge on the left half, tread temperature on the right half (blue = cold, green = in the compound's
+     * window, red = overheated).
+     */
+    private void fuelAndTemperature(GraphicsContext g, Telemetry t, double x, double y, double width) {
+        if (!t.hasDrivetrain()) {
+            return;
+        }
+
+        double half = width / 2;
+
+        if (t.fuelLimited()) {
+            text(g, "Fuel", x, y + 6, 11, TEXT, TextAlignment.LEFT, false);
+            double bx = x + 34, bw = half - 110;
+            g.setFill(Color.web("#2a2f37"));
+            g.fillRoundRect(bx, y + 2, bw, 8, 4, 4);
+            g.setFill(t.fuelFraction() > 0.25 ? Color.web("#22c55e") : t.fuelFraction() > 0.1 ? Color.web("#facc15")
+                    : Color.web("#ff3b30"));
+            g.fillRoundRect(bx, y + 2, bw * t.fuelFraction(), 8, 4, 4);
+            text(g, String.format(Locale.ROOT, "%.0f %% · %.2f kg", 100 * t.fuelFraction(), t.fuelKg()), x + half - 12,
+                    y + 6, 10, DIM, TextAlignment.RIGHT, false);
+        } else {
+            text(g, "Fuel: unlimited", x, y + 6, 11, DIM, TextAlignment.LEFT, false);
+        }
+
+        if (t.tyreTemperatureOn()) {
+            Color color = switch (t.temperatureState()) {
+                case "cold" -> Color.web("#4ea1ff");
+                case "hot" -> Color.web("#ff3b30");
+                default -> Color.web("#22c55e");
+            };
+            g.setFill(color);
+            g.fillOval(x + half, y, 12, 12);
+            text(g, String.format(Locale.ROOT, "%.0f °C %s · window %.0f–%.0f · grip %.0f %%", t.tyreTemperature(),
+                    t.temperatureState(), t.tire().optimalLow(), t.tire().optimalHigh(), 100 * t.temperatureGrip()),
+                    x + half + 18, y + 6, 10, TEXT, TextAlignment.LEFT, false);
+        } else {
+            text(g, "Tyre temperature: off", x + half, y + 6, 11, DIM, TextAlignment.LEFT, false);
+        }
     }
 
     private void tachometer(GraphicsContext g, Telemetry t, double cx, double cy, double r) {
@@ -164,7 +209,9 @@ public class Dashboard extends Canvas {
     }
 
     private void status(GraphicsContext g, Telemetry t, double x, double y) {
-        if (t.sliding()) {
+        if (t.alive() && t.fuelLimited() && t.fuelFraction() <= 0.0) {
+            badge(g, "NO FUEL", x, y, Color.web("#ff3b30"));
+        } else if (t.sliding()) {
             badge(g, "SLIDING", x, y, Color.web("#ff3b30"));
         } else if (!t.alive()) {
             String reason = switch (t.deathCause()) {
@@ -172,6 +219,7 @@ public class Dashboard extends Canvas {
                 case STAGNATED -> "STUCK";
                 case TIMEOUT -> "TIME UP";
                 case FINISHED -> "FINISHED";
+                case OUT_OF_FUEL -> "OUT OF FUEL";
                 case ALIVE -> "STOPPED";
             };
             badge(g, reason, x, y, t.deathCause() == DeathCause.FINISHED ? Color.web("#22c55e") : Color.web("#6b7280"));
@@ -192,7 +240,9 @@ public class Dashboard extends Canvas {
 
     private static void text(GraphicsContext g, String text, double x, double y, double size, Color color,
                              TextAlignment alignment, boolean bold) {
-        g.setFont(Font.font("System", bold ? FontWeight.BOLD : FontWeight.NORMAL, size));
+        // Font lookups are not free and the dashboard redraws ~25 labels per image: cache them.
+        g.setFont(FONTS.computeIfAbsent((bold ? 1000.0 : 0.0) + size,
+                key -> Font.font("System", bold ? FontWeight.BOLD : FontWeight.NORMAL, size)));
         g.setFill(color);
         g.setTextAlign(alignment);
         g.setTextBaseline(VPos.CENTER);

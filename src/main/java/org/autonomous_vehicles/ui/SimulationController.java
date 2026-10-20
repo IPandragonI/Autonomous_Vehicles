@@ -1,10 +1,13 @@
 package org.autonomous_vehicles.ui;
 
+import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.GenerationStats;
 import org.autonomous_vehicles.evolution.GeneticAlgorithm;
+import org.autonomous_vehicles.evolution.NetworkInputs;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.evolution.StatsHistory;
 import org.autonomous_vehicles.geometry.Vec2;
+import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.CarAgent;
 import org.autonomous_vehicles.sim.LapReplay;
 import org.autonomous_vehicles.sim.Simulation;
@@ -14,17 +17,28 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 /**
  * Drives the evolution for the interface, without any JavaFX dependency (so it is unit-tested).
  * <p>
- * Update and rendering are separate: each {@link #tick()} (one per displayed image) runs
- * {@code speed} simulation steps of the displayed track. When every car is stopped, the other
- * tracks (multi-track training) are simulated instantly and the next generation is bred.
+ * Update and rendering are separate. {@link #tick(double)} (once per displayed image) runs as many steps as the
+ * real time elapsed × the speed requires — ×1 is real time whatever the frame rate — in parallel batches, and
+ * stops at {@link #FRAME_BUDGET_NANOS} so the interface stays at 60 images per second; time that could not be
+ * simulated is dropped rather than caught up (no spiral of death), and {@link #getEffectiveSpeed()} reports the
+ * speed actually reached. When every car is stopped, the other tracks (multi-track training) are simulated
+ * instantly and the next generation is bred. The results never depend on how steps are batched.
  */
 public class SimulationController {
 
-    public static final int[] SPEEDS = {1, 2, 10, 100};
+    public static final int[] SPEEDS = {1, 2, 10, 100, 1000};
+
+    /** Simulation work allowed per displayed image: leaves ~6 ms of a 60 Hz frame for drawing. */
+    public static final long FRAME_BUDGET_NANOS = 10_000_000L;
+    /** Steps per parallel batch: large enough to amortise the thread hand-off, small enough to meet the budget. */
+    static final int BATCH_STEPS = 20;
+    /** A longer pause between two images (window dragged, debugger) is not caught up. */
+    static final double MAX_FRAME_GAP = 0.25;
 
     private final RenderOptions renderOptions = new RenderOptions();
     private final List<Consumer<GenerationStats>> generationListeners = new ArrayList<>();
@@ -35,9 +49,29 @@ public class SimulationController {
     private boolean playing;
     private int speed = 1;
     private int selectedCarId = -1;
+    private Champion replay;
+    private List<Simulation> pausedTraining;
+    private Champion seed;
+    private Champion seedDropped;
+
+    private final LongSupplier clock;
+    private double owedSteps;
+    private double effectiveSpeed = Double.NaN;
 
     public SimulationController(SimulationConfig config) {
+        this(config, System::nanoTime);
+    }
+
+    /**
+     * @param clock monotonic nanoseconds, used only for the per-image time budget (injected so tests are exact)
+     */
+    public SimulationController(SimulationConfig config, LongSupplier clock) {
+        if (clock == null) {
+            throw new IllegalArgumentException("Clock must not be null.");
+        }
+
         this.config = config;
+        this.clock = clock;
         reset();
     }
 
@@ -62,6 +96,8 @@ public class SimulationController {
         }
 
         this.speed = speed;
+        owedSteps = 0.0;
+        effectiveSpeed = Double.NaN; // the smoothing restarts, so the new speed shows at once
     }
 
     public int getSpeed() {
@@ -72,9 +108,122 @@ public class SimulationController {
      * Restarts from a new random population (generation 0) with the current configuration.
      */
     public void reset() {
-        algorithm = new GeneticAlgorithm(config);
+        NeuralNetwork seedNetwork = null;
+
+        if (seed != null) {
+            // A configuration with more inputs (speed, car state) widens the champion with zero weights from them.
+            seedNetwork = NetworkInputs.adapt(seed.network(), seed.config(), config);
+
+            if (seedNetwork == null) {
+                seedDropped = seed; // other rays or hidden layers, or fewer inputs: the network does not fit
+                seed = null;
+            }
+        }
+
+        algorithm = new GeneticAlgorithm(config, seedNetwork);
         simulations = algorithm.createSimulations();
         selectedCarId = -1;
+        replay = null;
+        pausedTraining = null;
+    }
+
+    /**
+     * Restarts the training from a saved champion with its configuration: generation 0 is the champion plus mutants
+     * of it ({@code Population.seeded}). The champion stays the seed of every later restart (Restart button,
+     * track or car change) until {@link #clearSeed()}, or until a change needs another network shape.
+     */
+    public void retrainFrom(Champion champion) {
+        if (champion == null) {
+            throw new IllegalArgumentException("Champion must not be null.");
+        }
+
+        Champion previousSeed = seed;
+        SimulationConfig previousConfig = config;
+        seed = champion;
+        seedDropped = null;
+        config = champion.config();
+
+        try {
+            reset();
+        } catch (IllegalArgumentException e) {
+            // e.g. the champion's track was imported and is not available: keep the current run untouched
+            seed = previousSeed;
+            config = previousConfig;
+            throw e;
+        }
+    }
+
+    /**
+     * Back to random populations (from the next restart, which happens now).
+     */
+    public void clearSeed() {
+        seed = null;
+        seedDropped = null;
+        reset();
+    }
+
+    /**
+     * The champion the populations are bred from, or null for random populations.
+     */
+    public Champion getSeed() {
+        return seed;
+    }
+
+    /**
+     * The seed the last restart had to give up because the configuration changed the network shape (inputs or
+     * hidden layers), or null; reading it clears it, so the interface reports it once.
+     */
+    public Champion takeDroppedSeed() {
+        Champion dropped = seedDropped;
+        seedDropped = null;
+        return dropped;
+    }
+
+    /**
+     * Shows a saved champion driving alone on its first track, in a loop, with its own configuration (track, car,
+     * sensors). The training run is set aside untouched and resumes with {@link #stopReplay()}.
+     *
+     * @throws IllegalArgumentException if the champion's track is not available; nothing changes then
+     */
+    public void startReplay(Champion champion) {
+        if (champion == null) {
+            throw new IllegalArgumentException("Champion must not be null.");
+        }
+
+        Simulation simulation = champion.replay();
+
+        if (replay == null) {
+            pausedTraining = simulations;
+        }
+
+        replay = champion;
+        simulations = List.of(simulation);
+        selectedCarId = -1;
+    }
+
+    /**
+     * Back to the training run, exactly where it was left.
+     */
+    public void stopReplay() {
+        if (replay == null) {
+            return;
+        }
+
+        simulations = pausedTraining;
+        pausedTraining = null;
+        replay = null;
+        selectedCarId = -1;
+    }
+
+    public boolean isReplaying() {
+        return replay != null;
+    }
+
+    /**
+     * The replayed champion, or null when training.
+     */
+    public Champion getReplay() {
+        return replay;
     }
 
     /**
@@ -101,35 +250,101 @@ public class SimulationController {
     }
 
     /**
-     * One displayed image: {@code speed} steps if playing, nothing when paused.
+     * One displayed image in fixed-step mode: {@code speed} steps if playing, nothing when paused.
      */
     public void tick() {
         if (!playing) {
             return;
         }
 
-        for (int i = 0; i < speed; i++) {
-            step();
+        advance(speed);
+    }
+
+    /**
+     * One displayed image, {@code elapsedSeconds} after the previous one: simulates elapsed × speed seconds,
+     * within the {@link #FRAME_BUDGET_NANOS} budget. Nothing happens when paused.
+     */
+    public void tick(double elapsedSeconds) {
+        if (!Double.isFinite(elapsedSeconds) || elapsedSeconds < 0.0) {
+            throw new IllegalArgumentException("Elapsed time must be finite and non-negative.");
         }
+
+        if (!playing) {
+            effectiveSpeed = Double.NaN;
+            return;
+        }
+
+        double dt = getDisplayedSimulation().getSettings().dt(); // a replay keeps its own time step
+        double elapsed = Math.min(elapsedSeconds, MAX_FRAME_GAP);
+        owedSteps += elapsed * speed / dt;
+        long start = clock.getAsLong();
+        int simulated = 0;
+
+        while (owedSteps >= 1.0) {
+            int batch = (int) Math.min(owedSteps, BATCH_STEPS);
+            advance(batch);
+            owedSteps -= batch;
+            simulated += batch;
+
+            if (clock.getAsLong() - start >= FRAME_BUDGET_NANOS) {
+                owedSteps = 0.0;
+                break;
+            }
+        }
+
+        if (elapsed > 0.0) {
+            double speedNow = simulated * dt / elapsed;
+            // Smoothed over ~10 images so the displayed value is readable.
+            effectiveSpeed = Double.isNaN(effectiveSpeed) ? speedNow : 0.9 * effectiveSpeed + 0.1 * speedNow;
+        }
+    }
+
+    /**
+     * Simulated seconds per real second over the last images (≈ the speed unless the budget limits it),
+     * NaN when paused or in fixed-step mode.
+     */
+    public double getEffectiveSpeed() {
+        return effectiveSpeed;
     }
 
     /**
      * Exactly one simulation step (also usable while paused, e.g. "next step").
      */
     public void step() {
-        Simulation displayed = getDisplayedSimulation();
-        displayed.step();
+        advance(1);
+    }
 
-        if (displayed.isFinished()) {
-            for (Simulation other : simulations) {
-                other.runUntilAllDead();
+    /**
+     * {@code steps} steps of the displayed track, in parallel; a generation (or replay) that ends part-way is
+     * followed by the next one for the remaining steps.
+     */
+    private void advance(int steps) {
+        int remaining = steps;
+
+        while (remaining > 0) {
+            Simulation displayed = getDisplayedSimulation();
+            remaining -= displayed.advance(remaining);
+
+            if (displayed.isFinished()) {
+                endOfRun();
             }
-
-            GenerationStats stats = algorithm.completeGeneration(simulations);
-            simulations = algorithm.createSimulations();
-            selectedCarId = -1;
-            generationListeners.forEach(listener -> listener.accept(stats));
         }
+    }
+
+    private void endOfRun() {
+        if (replay != null) {
+            simulations = List.of(replay.replay());
+            return;
+        }
+
+        for (Simulation other : simulations) {
+            other.runUntilAllDead();
+        }
+
+        GenerationStats stats = algorithm.completeGeneration(simulations);
+        simulations = algorithm.createSimulations();
+        selectedCarId = -1;
+        generationListeners.forEach(listener -> listener.accept(stats));
     }
 
     public void addGenerationListener(Consumer<GenerationStats> listener) {
@@ -175,6 +390,14 @@ public class SimulationController {
      */
     public boolean hasSelection() {
         return selectedCarId >= 0;
+    }
+
+    /**
+     * Names of the inspected car's network inputs (rays, speed, car state), empty if there is no car.
+     */
+    public List<String> getFocusedInputLabels() {
+        CarAgent focused = getFocusedAgent();
+        return focused == null ? List.of() : focused.getBrain().inputLabels();
     }
 
     public NetworkSnapshot getFocusedNetwork() {

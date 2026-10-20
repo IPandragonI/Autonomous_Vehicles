@@ -1,6 +1,7 @@
 package org.autonomous_vehicles.evolution;
 
 import org.autonomous_vehicles.neural.NetworkIO;
+import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.AgentResult;
 import org.autonomous_vehicles.sim.LapReplay;
 import org.autonomous_vehicles.sim.Simulation;
@@ -11,6 +12,7 @@ import org.autonomous_vehicles.util.Rng;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,9 +42,19 @@ public class GeneticAlgorithm {
     private Population population;
     private int generation;
     private Individual champion;
+    private int championGeneration = -1;
     private LapReplay bestLap;
 
     public GeneticAlgorithm(SimulationConfig config) {
+        this(config, null);
+    }
+
+    /**
+     * @param seed network the first population is bred from — retraining a saved champion, possibly on another
+     *             track or car — or null for a random population. It must have the configuration's architecture.
+     * @see Population#seeded
+     */
+    public GeneticAlgorithm(SimulationConfig config, NeuralNetwork seed) {
         if (config == null) {
             throw new IllegalArgumentException("Configuration must not be null.");
         }
@@ -50,10 +62,22 @@ public class GeneticAlgorithm {
         this.config = config;
         this.rng = new Rng(config.seed());
         this.tracks = config.tracks().stream().map(Tracks::byName).toList();
-        this.evaluator = new Evaluator(tracks, config.createSensor(), config.useSpeedInput(), config.settings(),
-                config.createFitness(), config.createVehicle());
-        this.population = new Population(config.populationSize(), config.architecture(), rng);
-        createOperators();
+        this.evaluator = new Evaluator(tracks, config.createSensor(), config.useSpeedInput(),
+                config.useCarStateInputs(), config.settings(), config.createFitness(), config.createVehicle());
+
+        if (seed == null) {
+            this.population = NetworkInputs.randomPopulation(config, rng);
+            createOperators();
+        } else {
+            if (!Arrays.equals(seed.getArchitecture(), config.architecture())) {
+                throw new IllegalArgumentException("The champion's network has " + seed.getArchitecture()[0]
+                        + " inputs and architecture " + Arrays.toString(seed.getArchitecture())
+                        + ", the configuration needs " + config.architectureLabel() + ".");
+            }
+
+            createOperators();
+            this.population = Population.seeded(config.populationSize(), seed, mutation);
+        }
     }
 
     private void createOperators() {
@@ -129,6 +153,7 @@ public class GeneticAlgorithm {
 
         if (champion == null || best.getFitness() > champion.getFitness()) {
             champion = best.copy();
+            championGeneration = generation;
         }
 
         for (Individual individual : population.getIndividuals()) {
@@ -166,6 +191,13 @@ public class GeneticAlgorithm {
 
     public Individual getChampion() {
         return champion;
+    }
+
+    /**
+     * Generation in which the champion was evaluated, -1 before the first generation.
+     */
+    public int getChampionGeneration() {
+        return championGeneration;
     }
 
     /**

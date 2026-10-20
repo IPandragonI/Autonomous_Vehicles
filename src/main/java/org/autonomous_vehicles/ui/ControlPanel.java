@@ -15,15 +15,14 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
-import javafx.stage.FileChooser;
 import org.autonomous_vehicles.evolution.CompositeFitness;
 import org.autonomous_vehicles.evolution.FitnessComponent;
 import org.autonomous_vehicles.evolution.MutationOperator;
 import org.autonomous_vehicles.evolution.SelectionType;
 import org.autonomous_vehicles.evolution.SimulationConfig;
+import org.autonomous_vehicles.sim.CarBrain;
+import org.autonomous_vehicles.sim.RaceRules;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.Locale;
@@ -46,9 +45,12 @@ public class ControlPanel extends VBox {
     private final ComboBox<String> hiddenLayers = new ComboBox<>();
     private final Label architectureLabel = new Label();
     private final CheckBox speedInput = new CheckBox("Speed as an input");
+    private final CheckBox carStateInputs = new CheckBox("Fuel, tyre temperature, wear, sliding as inputs");
     private final Slider timeLimit = slider(20, 900, 60, 0);
     private final Slider rayRange = slider(20, 300, 80, 0);
     private final TextField seed = new TextField();
+    private final Slider fuelAutonomy = slider(0, 300, RaceRules.DEFAULT_FUEL_AUTONOMY, 0);
+    private final CheckBox tyreTemperature = new CheckBox("Tyre temperature (grip window)");
 
     private final Slider mutationRate = slider(0, 0.5, 0.08, 2);
     private final Slider mutationStrength = slider(0, 1.5, 0.25, 2);
@@ -78,11 +80,11 @@ public class ControlPanel extends VBox {
         Accordion accordion = new Accordion(evolutionPane(), fitnessPane(), runPane());
         accordion.setExpandedPane(accordion.getPanes().getFirst());
 
-        Button save = new Button("Save best network…");
-        save.setTooltip(new Tooltip("Writes the champion's weights to a text file (NetworkIO format)."));
-        save.setOnAction(event -> saveChampion());
+        Label champion = new Label("Save or replay the best network from the Champion menu of the toolbar.");
+        champion.setWrapText(true);
+        champion.setStyle("-fx-text-fill: #57606a;");
 
-        getChildren().addAll(title, accordion, save);
+        getChildren().addAll(title, accordion, champion);
         refresh();
     }
 
@@ -136,6 +138,9 @@ public class ControlPanel extends VBox {
         hiddenLayers.getItems().addAll("6", "12-8", "8", "4", "16-16");
         hiddenLayers.valueProperty().addListener((obs, old, value) -> updateArchitectureLabel());
         speedInput.selectedProperty().addListener((obs, old, value) -> updateArchitectureLabel());
+        carStateInputs.selectedProperty().addListener((obs, old, value) -> updateArchitectureLabel());
+        carStateInputs.setTooltip(new Tooltip("4 more inputs: fuel left, tyre temperature relative to the compound's "
+                + "window, tyre wear, sliding. Constant for the kinematic car."));
 
         Button apply = new Button("Apply & restart");
         apply.setDefaultButton(true);
@@ -146,10 +151,16 @@ public class ControlPanel extends VBox {
         row(grid, 1, "Hidden layers", hiddenLayers, "Neurons per hidden layer, e.g. 6 or 12-8.");
         grid.add(architectureLabel, 1, 2);
         grid.add(speedInput, 1, 3);
-        row(grid, 4, "Time limit (s)", timeLimit, "A car is stopped after this time.");
-        row(grid, 5, "Sensor range (m)", rayRange, "How far the 5 distance rays see.");
-        row(grid, 6, "Seed", seed, "Same seed = same run.");
-        grid.add(apply, 1, 7);
+        grid.add(carStateInputs, 1, 4);
+        row(grid, 5, "Time limit (s)", timeLimit, "A car is stopped after this time.");
+        row(grid, 6, "Sensor range (m)", rayRange, "How far the distance rays see.");
+        row(grid, 7, "Seed", seed, "Same seed = same run.");
+        row(grid, 8, "Fuel (s at full power)", fuelAutonomy, "Starting fuel of grip-limited cars, in seconds of "
+                + "full power; 0 = unlimited. A dry car loses drive and is out once it stops. Ignored by kinematic.");
+        grid.add(tyreTemperature, 1, 9);
+        Tooltip.install(tyreTemperature, new Tooltip("Tyres heat with grip use and sliding, cool in the airflow; "
+                + "grip is best inside the compound's window. Ignored by the kinematic car."));
+        grid.add(apply, 1, 10);
 
         return new TitledPane("Population & network · restarts the run", grid);
     }
@@ -163,9 +174,12 @@ public class ControlPanel extends VBox {
         population.setValue(config.populationSize());
         hiddenLayers.setValue(Arrays.stream(config.hiddenLayers()).mapToObj(String::valueOf).collect(Collectors.joining("-")));
         speedInput.setSelected(config.useSpeedInput());
+        carStateInputs.setSelected(config.useCarStateInputs());
         timeLimit.setValue(config.settings().maxTime());
         rayRange.setValue(config.rayRange());
         seed.setText(String.valueOf(config.seed()));
+        fuelAutonomy.setValue(config.rules().fuelAutonomy());
+        tyreTemperature.setSelected(config.rules().tyreTemperature());
         mutationRate.setValue(config.mutationRate());
         mutationStrength.setValue(config.mutationStrength());
         noise.setValue(config.noise());
@@ -183,7 +197,8 @@ public class ControlPanel extends VBox {
     private void updateArchitectureLabel() {
         try {
             int[] hidden = parseHiddenLayers(hiddenLayers.getValue());
-            StringBuilder label = new StringBuilder("Network: ").append(5 + (speedInput.isSelected() ? 1 : 0));
+            StringBuilder label = new StringBuilder("Network: ").append(controller.getConfig().rayCount()
+                    + (speedInput.isSelected() ? 1 : 0) + (carStateInputs.isSelected() ? CarBrain.CAR_STATE_INPUTS : 0));
 
             for (int size : hidden) {
                 label.append('-').append(size);
@@ -232,10 +247,12 @@ public class ControlPanel extends VBox {
             SimulationConfig candidate = hotValues(controller.getConfig())
                     .populationSize((int) Math.round(population.getValue()))
                     .useSpeedInput(speedInput.isSelected())
+                    .useCarStateInputs(carStateInputs.isSelected())
                     .hiddenLayers(parseHiddenLayers(hiddenLayers.getValue()))
                     .rayRange(Math.round(rayRange.getValue()))
                     .settings(controller.getConfig().settings().withMaxTime(Math.round(timeLimit.getValue())))
                     .seed(Long.parseLong(seed.getText().trim()))
+                    .rules(new RaceRules(Math.round(fuelAutonomy.getValue()), tyreTemperature.isSelected()))
                     .build();
 
             if (!controller.applyConfig(candidate)) {
@@ -263,26 +280,6 @@ public class ControlPanel extends VBox {
             return Arrays.stream(text.trim().split("\\s*[-,]\\s*")).mapToInt(Integer::parseInt).toArray();
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("Hidden layers: whole numbers separated by '-', e.g. 12-8.");
-        }
-    }
-
-    private void saveChampion() {
-        if (controller.getAlgorithm().getChampion() == null) {
-            status.accept("Nothing to save yet: wait for the first generation to finish.");
-            return;
-        }
-
-        FileChooser chooser = new FileChooser();
-        chooser.setInitialFileName("champion.txt");
-        File file = chooser.showSaveDialog(getScene().getWindow());
-
-        if (file != null) {
-            try {
-                controller.getAlgorithm().saveChampion(file.toPath());
-                status.accept("Best network saved to " + file.getName());
-            } catch (IOException e) {
-                status.accept("Cannot save: " + e.getMessage());
-            }
         }
     }
 

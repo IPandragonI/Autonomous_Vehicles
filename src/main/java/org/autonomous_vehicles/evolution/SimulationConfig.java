@@ -1,6 +1,7 @@
 package org.autonomous_vehicles.evolution;
 
 import org.autonomous_vehicles.sim.CarBrain;
+import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.RaySensor;
 import org.autonomous_vehicles.sim.SimulationSettings;
 import org.autonomous_vehicles.sim.TireCompound;
@@ -21,6 +22,7 @@ public record SimulationConfig(
         int populationSize,
         int[] hiddenLayers,
         boolean useSpeedInput,
+        boolean useCarStateInputs,
         int rayCount,
         double rayRange,
         double mutationRate,
@@ -37,6 +39,7 @@ public record SimulationConfig(
         SimulationSettings settings,
         String carType,
         TireCompound tire,
+        RaceRules rules,
         long seed) {
 
     public enum Crossover { NONE, UNIFORM, ONE_POINT }
@@ -75,6 +78,7 @@ public record SimulationConfig(
         tracks = List.copyOf(tracks);
         require(Vehicles.TYPES.contains(carType), "Car type must be one of " + Vehicles.TYPES + ".");
         require(tire != null, "Tyre compound must not be null.");
+        require(rules != null, "Race rules must not be null.");
     }
 
     private static void require(boolean condition, String message) {
@@ -85,14 +89,15 @@ public record SimulationConfig(
 
     /**
      * Starting values of the assignment (section 6.1): 100 cars, 5-6-2 Tanh, 5 rays,
-     * mutation 8 % with σ = 0.25, 5 % elitism, dt = 1/60 s.
+     * mutation 8 % with σ = 0.25, 5 % elitism, dt = 1/60 s. Fuel and tyre temperature are on, but the kinematic
+     * car of the assignment ignores them: they act once a grip-limited car type is chosen.
      */
     public static SimulationConfig defaults() {
-        return new SimulationConfig(100, new int[]{6}, false, 5, RaySensor.DEFAULT_RANGE,
+        return new SimulationConfig(100, new int[]{6}, false, false, 5, RaySensor.DEFAULT_RANGE,
                 0.08, 0.25, MutationOperator.Noise.GAUSSIAN, SelectionType.TOURNAMENT, 3,
                 TruncationSelection.DEFAULT_FRACTION, 5, Crossover.NONE, FitnessMode.COMPOSITE,
                 CompositeFitness.defaults(), List.of("oval"), SimulationSettings.defaults(), Vehicles.KINEMATIC,
-                TireCompound.MEDIUM, 42L);
+                TireCompound.MEDIUM, RaceRules.defaults(), 42L);
     }
 
     @Override
@@ -100,8 +105,11 @@ public record SimulationConfig(
         return hiddenLayers.clone();
     }
 
+    /**
+     * Rays, then the speed (optional), then the {@link CarBrain#CAR_STATE_INPUTS} car state inputs (optional).
+     */
     public int inputSize() {
-        return rayCount + (useSpeedInput ? 1 : 0);
+        return rayCount + (useSpeedInput ? 1 : 0) + (useCarStateInputs ? CarBrain.CAR_STATE_INPUTS : 0);
     }
 
     /**
@@ -124,7 +132,7 @@ public record SimulationConfig(
     }
 
     public VehicleModel createVehicle() {
-        return Vehicles.create(carType, tire);
+        return Vehicles.create(carType, tire, rules);
     }
 
     public FitnessFunction createFitness() {
@@ -139,12 +147,14 @@ public record SimulationConfig(
         return populationSize != other.populationSize
                 || !Arrays.equals(hiddenLayers, other.hiddenLayers)
                 || useSpeedInput != other.useSpeedInput
+                || useCarStateInputs != other.useCarStateInputs
                 || rayCount != other.rayCount
                 || rayRange != other.rayRange
                 || !tracks.equals(other.tracks)
                 || !settings.equals(other.settings)
                 || !carType.equals(other.carType)
                 || tire != other.tire
+                || !rules.equals(other.rules)
                 || seed != other.seed;
     }
 
@@ -181,7 +191,12 @@ public record SimulationConfig(
                 + (selection == SelectionType.TRUNCATION ? " " + truncationFraction : "")
                 + ", elites=" + eliteCount + ", crossover=" + crossover + ", fitness=" + fitnessMode
                 + ", tracks=" + tracks + ", car=" + carType
-                + (carType.equals(Vehicles.KINEMATIC) ? "" : "/" + tire) + ", seed=" + seed + "]";
+                + (carType.equals(Vehicles.KINEMATIC) ? "" : "/" + tire + rulesLabel()) + ", seed=" + seed + "]";
+    }
+
+    private String rulesLabel() {
+        return (rules.limitedFuel() ? String.format(java.util.Locale.ROOT, " fuel %.0fs", rules.fuelAutonomy()) : "")
+                + (rules.tyreTemperature() ? " tyre-temp" : "");
     }
 
     /**
@@ -191,6 +206,7 @@ public record SimulationConfig(
         private int populationSize;
         private int[] hiddenLayers;
         private boolean useSpeedInput;
+        private boolean useCarStateInputs;
         private int rayCount;
         private double rayRange;
         private double mutationRate;
@@ -207,12 +223,14 @@ public record SimulationConfig(
         private SimulationSettings settings;
         private String carType;
         private TireCompound tire;
+        private RaceRules rules;
         private long seed;
 
         private Builder(SimulationConfig config) {
             populationSize = config.populationSize;
             hiddenLayers = config.hiddenLayers();
             useSpeedInput = config.useSpeedInput;
+            useCarStateInputs = config.useCarStateInputs;
             rayCount = config.rayCount;
             rayRange = config.rayRange;
             mutationRate = config.mutationRate;
@@ -229,12 +247,14 @@ public record SimulationConfig(
             settings = config.settings;
             carType = config.carType;
             tire = config.tire;
+            rules = config.rules;
             seed = config.seed;
         }
 
         public Builder populationSize(int value) { populationSize = value; return this; }
         public Builder hiddenLayers(int... value) { hiddenLayers = value == null ? null : value.clone(); return this; }
         public Builder useSpeedInput(boolean value) { useSpeedInput = value; return this; }
+        public Builder useCarStateInputs(boolean value) { useCarStateInputs = value; return this; }
         public Builder rayCount(int value) { rayCount = value; return this; }
         public Builder rayRange(double value) { rayRange = value; return this; }
         public Builder mutationRate(double value) { mutationRate = value; return this; }
@@ -252,12 +272,13 @@ public record SimulationConfig(
         public Builder settings(SimulationSettings value) { settings = value; return this; }
         public Builder carType(String value) { carType = value; return this; }
         public Builder tire(TireCompound value) { tire = value; return this; }
+        public Builder rules(RaceRules value) { rules = value; return this; }
         public Builder seed(long value) { seed = value; return this; }
 
         public SimulationConfig build() {
-            return new SimulationConfig(populationSize, hiddenLayers, useSpeedInput, rayCount, rayRange,
+            return new SimulationConfig(populationSize, hiddenLayers, useSpeedInput, useCarStateInputs, rayCount, rayRange,
                     mutationRate, mutationStrength, noise, selection, tournamentSize, truncationFraction, eliteCount,
-                    crossover, fitnessMode, compositeFitness, tracks, settings, carType, tire, seed);
+                    crossover, fitnessMode, compositeFitness, tracks, settings, carType, tire, rules, seed);
         }
     }
 }

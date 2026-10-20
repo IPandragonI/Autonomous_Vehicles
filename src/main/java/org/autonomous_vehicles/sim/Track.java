@@ -159,8 +159,19 @@ public class Track {
         return wallGrid.raycast(origin.x(), origin.y(), direction.x(), direction.y(), maxDistance);
     }
 
+    /**
+     * Allocation-free variant for the hot path (5+ rays per car per step): (dx, dy) must be a unit vector.
+     */
+    public double distanceToWall(double originX, double originY, double dx, double dy, double maxDistance) {
+        return wallGrid.raycast(originX, originY, dx, dy, maxDistance);
+    }
+
     public boolean circleTouchesWall(Vec2 center, double radius) {
         return wallGrid.circleHitsWall(center.x(), center.y(), radius);
+    }
+
+    public boolean circleTouchesWall(double centerX, double centerY, double radius) {
+        return wallGrid.circleHitsWall(centerX, centerY, radius);
     }
 
     public boolean segmentCrossesWall(Vec2 from, Vec2 to) {

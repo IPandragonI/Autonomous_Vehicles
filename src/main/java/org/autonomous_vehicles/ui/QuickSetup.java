@@ -14,8 +14,9 @@ import java.util.List;
  * One-click setup used by the toolbar: changing track, car or tyres also applies the settings that were measured
  * to work, so a beginner does not end up with cars that can never finish a lap.
  * <ul>
- *     <li>real (grip-limited) cars get the speed input — without it the network cannot know when to brake;
- *     the simple kinematic car goes back to the assignment's 5 inputs;</li>
+ *     <li>real (grip-limited) cars get the speed input — without it the network cannot know when to brake —
+ *     and the car state inputs (fuel, tyre temperature, wear, sliding), since fuel and tyre temperature are on by
+ *     default; the simple kinematic car goes back to the assignment's 5 inputs;</li>
  *     <li>the time limit is {@link SimulationSettings#recommendedMaxTime} of the longest selected track.</li>
  * </ul>
  * Everything else (population, network, evolution, fitness) is kept. Plain Java, unit-tested.
@@ -37,6 +38,7 @@ public final class QuickSetup {
                 .carType(carType)
                 .tire(tire)
                 .useSpeedInput(!(vehicle instanceof KinematicModel))
+                .useCarStateInputs(!(vehicle instanceof KinematicModel))
                 .settings(config.settings().withMaxTime(timeLimit))
                 .build();
     }
@@ -47,7 +49,8 @@ public final class QuickSetup {
     public static String describe(SimulationConfig config) {
         return String.format(java.util.Locale.ROOT, "%s on %s%s · time limit %.0f s%s",
                 Vehicles.create(config.carType(), config.tire()).name(), String.join(" + ", config.tracks()),
-                config.useSpeedInput() ? " · speed input on" : "", config.settings().maxTime(),
+                (config.useSpeedInput() ? " · speed input on" : "")
+                        + (config.useCarStateInputs() ? " · fuel/tyre inputs on" : ""), config.settings().maxTime(),
                 " · new population");
     }
 }

@@ -6,6 +6,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 import javafx.scene.text.TextAlignment;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -17,11 +18,21 @@ public class NetworkView extends Canvas {
     private static final String[] INPUT_LABELS = {"R 90°", "R 45°", "0°", "L 45°", "L 90°", "speed"};
     private static final String[] OUTPUT_LABELS = {"steer", "throttle"};
 
+    private List<String> labels = List.of(INPUT_LABELS);
+
     public NetworkView(double width, double height) {
         super(width, height);
     }
 
     public void draw(NetworkSnapshot snapshot) {
+        draw(snapshot, List.of(INPUT_LABELS));
+    }
+
+    /**
+     * @param inputLabels name of each input, as the brain reads them (rays, speed, car state)
+     */
+    public void draw(NetworkSnapshot snapshot, List<String> inputLabels) {
+        labels = inputLabels;
         GraphicsContext g = getGraphicsContext2D();
         g.setFill(Color.web("#111418"));
         g.fillRect(0, 0, getWidth(), getHeight());
@@ -87,7 +98,7 @@ public class NetworkView extends Canvas {
 
                 if (l == 0) {
                     g.setTextAlign(TextAlignment.RIGHT);
-                    g.fillText((n < INPUT_LABELS.length ? INPUT_LABELS[n] : "in" + n) + " " + value, xs[l][n] - radius - 4, ys[l][n]);
+                    g.fillText((n < labels.size() ? labels.get(n) : "in" + n) + " " + value, xs[l][n] - radius - 4, ys[l][n]);
                 } else if (l == layers - 1) {
                     g.setTextAlign(TextAlignment.LEFT);
                     g.fillText((n < OUTPUT_LABELS.length ? OUTPUT_LABELS[n] : "out" + n) + " " + value, xs[l][n] + radius + 4, ys[l][n]);

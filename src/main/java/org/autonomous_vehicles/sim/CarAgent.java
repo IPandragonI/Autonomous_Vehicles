@@ -14,6 +14,9 @@ import java.util.List;
  */
 public class CarAgent {
 
+    /** A dry car has lost all drive; once it has coasted below this speed (m/s) it is out of the race. */
+    public static final double OUT_OF_FUEL_STOP_SPEED = 0.1;
+
     private final int id;
     private final Car car;
     private final CarBrain brain;
@@ -106,6 +109,8 @@ public class CarAgent {
 
         if (lapTracker.getLaps() >= settings.maxLaps()) {
             stop(DeathCause.FINISHED);
+        } else if (car.isOutOfFuel() && Math.abs(car.getSpeed()) < OUT_OF_FUEL_STOP_SPEED) {
+            stop(DeathCause.OUT_OF_FUEL);
         } else if (lapTracker.getElapsedTime() >= settings.maxTime()) {
             stop(DeathCause.TIMEOUT);
         } else if (lapTracker.getElapsedTime() - lastImprovementTime > settings.stagnationTime()) {

@@ -1,5 +1,6 @@
 package org.autonomous_vehicles.evolution;
 
+import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.util.Rng;
 
 import java.util.ArrayList;
@@ -34,6 +35,27 @@ public class Population {
         for (int i = 0; i < size; i++) {
             individuals.add(Individual.random(rng, architecture));
         }
+    }
+
+    /**
+     * Population bred from one network (retraining a champion): individual 0 is an exact copy, the others are
+     * mutants of it drawn with {@code mutation}. Starting next to a good driver instead of from random weights,
+     * the run keeps what the champion knows (elitism keeps the copy) and searches its neighbourhood.
+     */
+    public static Population seeded(int size, NeuralNetwork seed, MutationOperator mutation) {
+        if (size < 1 || seed == null || mutation == null) {
+            throw new IllegalArgumentException("A seeded population needs a positive size, a network and a mutation.");
+        }
+
+        Individual parent = new Individual(seed.copy());
+        List<Individual> individuals = new ArrayList<>(size);
+        individuals.add(parent);
+
+        for (int i = 1; i < size; i++) {
+            individuals.add(parent.withGenome(mutation.mutate(parent.getGenome())));
+        }
+
+        return new Population(individuals);
     }
 
     public Population(List<Individual> individuals) {

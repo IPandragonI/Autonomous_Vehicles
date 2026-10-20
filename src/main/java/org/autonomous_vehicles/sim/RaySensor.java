@@ -73,10 +73,12 @@ public class RaySensor {
         }
 
         double[] distances = new double[angles.length];
-        Vec2 origin = car.getPosition();
+        double x = car.getX(), y = car.getY(), heading = car.getAngle();
 
         for (int i = 0; i < angles.length; i++) {
-            distances[i] = castRay(origin, Vec2.fromAngle(car.getAngle() + angles[i]), track);
+            // Same arithmetic as Vec2.fromAngle(heading + angle), without a Vec2 per ray.
+            double angle = heading + angles[i];
+            distances[i] = track.distanceToWall(x, y, Math.cos(angle), Math.sin(angle), range);
         }
 
         return distances;
@@ -94,10 +96,6 @@ public class RaySensor {
         }
 
         return points;
-    }
-
-    private double castRay(Vec2 origin, Vec2 direction, Track track) {
-        return track.distanceToWall(origin, direction, range);
     }
 
     public int getRayCount() {

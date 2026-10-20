@@ -17,7 +17,7 @@ public final class Collision {
             throw new IllegalArgumentException("Car and track must not be null.");
         }
 
-        return hits(car.getPosition(), Car.RADIUS, track);
+        return track.circleTouchesWall(car.getX(), car.getY(), Car.RADIUS);
     }
 
     public static boolean hits(Vec2 center, double radius, Track track) {
