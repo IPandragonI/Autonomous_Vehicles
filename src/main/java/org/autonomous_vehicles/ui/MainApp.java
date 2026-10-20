@@ -233,6 +233,8 @@ public class MainApp extends Application {
             message.setText("Training resumed where it was left");
         });
 
+        MenuItem retrainCurrent = new MenuItem("Retrain a population from the current champion");
+        retrainCurrent.setOnAction(event -> retrainFromCurrentChampion());
         MenuItem retrain = new MenuItem("Retrain a population from a champion…");
         retrain.setOnAction(event -> retrainFromChampion(stage));
         MenuItem random = new MenuItem("Back to random populations");
@@ -243,7 +245,7 @@ public class MainApp extends Application {
         });
 
         MenuButton menu = new MenuButton("Champion", null, save, saveWeights, new SeparatorMenuItem(), load, back,
-                new SeparatorMenuItem(), retrain, random);
+                new SeparatorMenuItem(), retrainCurrent, retrain, random);
         menu.setTooltip(new Tooltip("Best network ever evaluated: save it with its configuration, replay a saved one, "
                 + "or breed a new population from it."));
         menu.setOnShowing(event -> {
@@ -252,6 +254,7 @@ public class MainApp extends Application {
             saveWeights.setDisable(none);
             back.setDisable(!controller.isReplaying());
             random.setDisable(controller.getSeed() == null);
+            retrainCurrent.setDisable(none);
         });
         return menu;
     }
@@ -278,6 +281,28 @@ public class MainApp extends Application {
                     + "the champion, the others are mutants of it", file.getName(), champion.generation(),
                     champion.fitness()));
         } catch (IOException | IllegalArgumentException e) {
+            message.setText("Cannot retrain: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Same as retraining from a saved file, with the best individual of the running training (no file needed):
+     * generation 0 becomes that champion plus mutants of it, with the current configuration.
+     */
+    private void retrainFromCurrentChampion() {
+        if (controller.getAlgorithm().getChampion() == null) {
+            message.setText("No champion yet: wait for the first generation to finish.");
+            return;
+        }
+
+        try {
+            Champion champion = Champion.of(controller.getAlgorithm());
+            controller.retrainFrom(champion);
+            afterRestart();
+            message.setText(String.format(Locale.ROOT, "Retraining from the current champion (generation %d, "
+                    + "fitness %.2f): car 0 is the champion, the others are mutants of it", champion.generation(),
+                    champion.fitness()));
+        } catch (IllegalArgumentException e) {
             message.setText("Cannot retrain: " + e.getMessage());
         }
     }
