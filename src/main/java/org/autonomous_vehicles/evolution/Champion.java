@@ -78,6 +78,23 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
     }
 
     /**
+     * The car with the fastest lap of the run ({@link GeneticAlgorithm#getFastestLap()}), as a champion: it can be
+     * saved, replayed and retrained like the fittest one.
+     *
+     * @throws IllegalStateException while no car has completed a lap
+     */
+    public static Champion fastestLap(GeneticAlgorithm algorithm) {
+        Individual fastest = algorithm.getFastestLap();
+
+        if (fastest == null) {
+            throw new IllegalStateException("No car has completed a lap yet.");
+        }
+
+        return new Champion(algorithm.getConfig(), fastest.getNetwork(), algorithm.getFastestLapGeneration(),
+                fastest.getFitness());
+    }
+
+    /**
      * Copy of the network (the record keeps its own, so a caller cannot change a saved champion).
      */
     @Override

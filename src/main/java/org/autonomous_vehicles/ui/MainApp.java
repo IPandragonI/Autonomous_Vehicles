@@ -11,6 +11,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
@@ -31,6 +32,7 @@ import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.SimulationConfig;
+import org.autonomous_vehicles.neural.NetworkIO;
 import org.autonomous_vehicles.sim.CarSpec;
 import org.autonomous_vehicles.sim.SimulationSettings;
 import org.autonomous_vehicles.sim.TireCompound;
@@ -244,19 +246,68 @@ public class MainApp extends Application {
             message.setText("New random population (the champion is no longer the seed)");
         });
 
-        MenuButton menu = new MenuButton("Champion", null, save, saveWeights, new SeparatorMenuItem(), load, back,
-                new SeparatorMenuItem(), retrainCurrent, retrain, random);
-        menu.setTooltip(new Tooltip("Best network ever evaluated: save it with its configuration, replay a saved one, "
-                + "or breed a new population from it."));
+        // Which car of the run "the current champion" is: the fittest, or the one with the fastest lap.
+        ToggleGroup kinds = new ToggleGroup();
+        RadioMenuItem byFitness = new RadioMenuItem("Champion = best score");
+        RadioMenuItem byLap = new RadioMenuItem("Champion = fastest lap (any generation)");
+        byFitness.setToggleGroup(kinds);
+        byLap.setToggleGroup(kinds);
+        byFitness.setOnAction(event -> chooseChampionKind(SimulationController.ChampionKind.BEST_FITNESS));
+        byLap.setOnAction(event -> chooseChampionKind(SimulationController.ChampionKind.FASTEST_LAP));
+        MenuItem replayCurrent = new MenuItem("Replay the current champion");
+        replayCurrent.setOnAction(event -> replayCurrentChampion());
+
+        MenuButton menu = new MenuButton("Champion", null, byFitness, byLap, new SeparatorMenuItem(), save,
+                saveWeights, new SeparatorMenuItem(), replayCurrent, load, back, new SeparatorMenuItem(),
+                retrainCurrent, retrain, random);
+        menu.setTooltip(new Tooltip("The best car of the run (best score, or fastest lap): save it with its "
+                + "configuration, replay it, or breed a new population from it."));
         menu.setOnShowing(event -> {
-            boolean none = controller.getAlgorithm().getChampion() == null;
+            boolean lapCriterion = controller.getChampionKind() == SimulationController.ChampionKind.FASTEST_LAP;
+            byFitness.setSelected(!lapCriterion);
+            byLap.setSelected(lapCriterion);
+            byLap.setText("Champion = fastest lap (any generation)" + fastestLapLabel());
+            boolean none = controller.getCurrentChampion() == null;
             save.setDisable(none);
             saveWeights.setDisable(none);
+            replayCurrent.setDisable(none);
+            retrainCurrent.setDisable(none);
             back.setDisable(!controller.isReplaying());
             random.setDisable(controller.getSeed() == null);
-            retrainCurrent.setDisable(none);
         });
         return menu;
+    }
+
+    /** " · 0:51.23, gen 7", or " · no lap yet". */
+    private String fastestLapLabel() {
+        double time = controller.getAlgorithm().getFastestLapTime();
+        return Double.isNaN(time) ? " · no lap yet" : String.format(Locale.ROOT, " · %s, gen %d",
+                Dashboard.lapTime(time), controller.getAlgorithm().getFastestLapGeneration());
+    }
+
+    private void chooseChampionKind(SimulationController.ChampionKind kind) {
+        controller.setChampionKind(kind);
+        message.setText(kind == SimulationController.ChampionKind.FASTEST_LAP
+                ? "Champion menu now works on the car with the fastest lap" + fastestLapLabel()
+                : "Champion menu now works on the car with the best score");
+    }
+
+    private void replayCurrentChampion() {
+        Champion champion = controller.getCurrentChampion();
+
+        if (champion == null) {
+            message.setText("No champion yet for this criterion.");
+            return;
+        }
+
+        try {
+            controller.startReplay(champion);
+            trackView.setCarType(champion.config().carType());
+            trackView.resetView();
+            message.setText("Replaying the current champion · Champion ▸ Back to training to resume");
+        } catch (IllegalArgumentException e) {
+            message.setText("Cannot replay: " + e.getMessage());
+        }
     }
 
     /**
@@ -290,13 +341,14 @@ public class MainApp extends Application {
      * generation 0 becomes that champion plus mutants of it, with the current configuration.
      */
     private void retrainFromCurrentChampion() {
-        if (controller.getAlgorithm().getChampion() == null) {
-            message.setText("No champion yet: wait for the first generation to finish.");
+        Champion champion = controller.getCurrentChampion();
+
+        if (champion == null) {
+            message.setText("No champion yet for this criterion.");
             return;
         }
 
         try {
-            Champion champion = Champion.of(controller.getAlgorithm());
             controller.retrainFrom(champion);
             afterRestart();
             message.setText(String.format(Locale.ROOT, "Retraining from the current champion (generation %d, "
@@ -316,10 +368,18 @@ public class MainApp extends Application {
     }
 
     private void saveChampion(Stage stage, boolean json) {
+        Champion champion = controller.getCurrentChampion();
+
+        if (champion == null) {
+            message.setText("No champion yet for this criterion.");
+            return;
+        }
+
+        boolean fastest = controller.getChampionKind() == SimulationController.ChampionKind.FASTEST_LAP;
         FileChooser chooser = new FileChooser();
         chooser.setTitle(json ? "Save the champion and its configuration" : "Save the champion's weights");
-        chooser.setInitialFileName(String.format(Locale.ROOT, "champion_gen_%03d%s",
-                controller.getAlgorithm().getChampionGeneration(), json ? Champion.EXTENSION : ".txt"));
+        chooser.setInitialFileName(String.format(Locale.ROOT, "%s_gen_%03d%s", fastest ? "fastest_lap" : "champion",
+                champion.generation(), json ? Champion.EXTENSION : ".txt"));
         File file = chooser.showSaveDialog(stage);
 
         if (file == null) {
@@ -328,9 +388,9 @@ public class MainApp extends Application {
 
         try {
             if (json) {
-                Champion.of(controller.getAlgorithm()).save(file.toPath());
+                champion.save(file.toPath());
             } else {
-                controller.getAlgorithm().saveChampion(file.toPath());
+                NetworkIO.save(champion.network(), file.toPath());
             }
 
             message.setText("Champion saved to " + file.getName());

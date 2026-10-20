@@ -53,6 +53,7 @@ public class SimulationController {
     private List<Simulation> pausedTraining;
     private Champion seed;
     private Champion seedDropped;
+    private ChampionKind championKind = ChampionKind.BEST_FITNESS;
 
     private final LongSupplier clock;
     private double owedSteps;
@@ -160,6 +161,40 @@ public class SimulationController {
         seed = null;
         seedDropped = null;
         reset();
+    }
+
+    /**
+     * Which car of the run the Champion menu works on (save, replay, retrain).
+     */
+    public enum ChampionKind {
+        /** Highest fitness ever (the algorithm's champion). */
+        BEST_FITNESS,
+        /** Fastest lap ever, whatever its generation (often a faster but riskier driver). */
+        FASTEST_LAP
+    }
+
+    public void setChampionKind(ChampionKind kind) {
+        if (kind == null) {
+            throw new IllegalArgumentException("Champion kind must not be null.");
+        }
+
+        championKind = kind;
+    }
+
+    public ChampionKind getChampionKind() {
+        return championKind;
+    }
+
+    /**
+     * The champion of the running training by the chosen {@link ChampionKind}, or null when there is none yet (no
+     * generation evaluated, or no lap completed for {@link ChampionKind#FASTEST_LAP}). It lives as long as the run:
+     * a restart starts a new memory.
+     */
+    public Champion getCurrentChampion() {
+        return switch (championKind) {
+            case BEST_FITNESS -> algorithm.getChampion() == null ? null : Champion.of(algorithm);
+            case FASTEST_LAP -> algorithm.getFastestLap() == null ? null : Champion.fastestLap(algorithm);
+        };
     }
 
     /**

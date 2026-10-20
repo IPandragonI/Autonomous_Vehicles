@@ -44,6 +44,9 @@ public class GeneticAlgorithm {
     private Individual champion;
     private int championGeneration = -1;
     private LapReplay bestLap;
+    private Individual fastestLap;
+    private double fastestLapTime = Double.NaN;
+    private int fastestLapGeneration = -1;
 
     public GeneticAlgorithm(SimulationConfig config) {
         this(config, null);
@@ -162,6 +165,15 @@ public class GeneticAlgorithm {
             if (result.bestLap() != null && (bestLap == null || result.bestLap().getLapTime() < bestLap.getLapTime())) {
                 bestLap = result.bestLap();
             }
+
+            // Strictly faster only: on a tie the earliest car stays, so the choice never depends on the sort order.
+            double lapTime = result.bestLapTime();
+
+            if (!Double.isNaN(lapTime) && (fastestLap == null || lapTime < fastestLapTime)) {
+                fastestLap = individual.copy();
+                fastestLapTime = lapTime;
+                fastestLapGeneration = generation;
+            }
         }
 
         population = population.nextGeneration(selection, mutation, crossover, config.eliteCount());
@@ -191,6 +203,27 @@ public class GeneticAlgorithm {
 
     public Individual getChampion() {
         return champion;
+    }
+
+    /**
+     * The car (network) that drove the fastest lap of the run on the first track, whatever its generation, or null
+     * while no car has completed a lap. Kept as a copy, so it survives even if evolution loses it: the fittest car
+     * ({@link #getChampion()}) is often a safer but slower driver, since the fitness also rewards progress and
+     * laps, not only speed.
+     */
+    public Individual getFastestLap() {
+        return fastestLap;
+    }
+
+    /**
+     * Seconds of that fastest lap, NaN while no lap was completed.
+     */
+    public double getFastestLapTime() {
+        return fastestLapTime;
+    }
+
+    public int getFastestLapGeneration() {
+        return fastestLapGeneration;
     }
 
     /**

@@ -178,6 +178,34 @@ public class SimulationControllerTest {
     }
 
     @Test
+    public void testCurrentChampionFollowsTheChosenCriterion() {
+        SimulationController controller = new SimulationController(config().toBuilder().populationSize(40)
+                .settings(SimulationSettings.defaults().withMaxTime(40)).build());
+
+        assertNull(controller.getCurrentChampion(), "Nothing evaluated yet.");
+
+        while (controller.getAlgorithm().getFastestLap() == null && controller.getGeneration() < 15) {
+            finishGeneration(controller);
+        }
+
+        assertNotNull(controller.getAlgorithm().getFastestLap(), "Cars lap the oval within 15 generations.");
+        assertArrayEquals(controller.getAlgorithm().getChampion().getGenome(),
+                controller.getCurrentChampion().network().getGenome(), "Best score by default.");
+
+        controller.setChampionKind(SimulationController.ChampionKind.FASTEST_LAP);
+
+        assertArrayEquals(controller.getAlgorithm().getFastestLap().getGenome(),
+                controller.getCurrentChampion().network().getGenome());
+
+        Champion fastest = controller.getCurrentChampion();
+        controller.retrainFrom(fastest);
+        assertArrayEquals(fastest.network().getGenome(),
+                controller.getDisplayedSimulation().getAgents().getFirst().getBrain().getNetwork().getGenome(),
+                "Retraining from the fastest car puts it in car 0.");
+        assertThrows(IllegalArgumentException.class, () -> controller.setChampionKind(null));
+    }
+
+    @Test
     public void testFocusedInputLabelsNameEveryNetworkInput() {
         SimulationController controller = new SimulationController(config().toBuilder().useCarStateInputs(true).build());
 
