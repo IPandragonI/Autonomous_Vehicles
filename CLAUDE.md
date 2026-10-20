@@ -91,6 +91,10 @@ that without breaking the assignment deliverables.
   dependency-free `util.Json` (doubles round-trip bit-exactly). `Champion.replay()` re-drives exactly the evaluated
   trajectory (determinism); `SimulationController.startReplay/stopReplay` shows it without touching the training run.
   `NetworkIO` (.txt, weights only) stays for the assignment deliverables. Bump `Champion.VERSION` on format changes.
+- Lap records: `SimulationController` watches the displayed cars once per image (plus the algorithm's fastest lap)
+  and reports each new record once (`takeNewLapRecord`, banner over the track); the same lap can come back ~1e-15 s
+  apart, hence `RECORD_TOLERANCE`. The tabs' figures come from plain-Java `CarDetails`, `BrainSummary` and
+  `getDeathCounts`; `MainApp` refreshes only the visible tab.
 
 ## Roadmap toward the long-term goal
 

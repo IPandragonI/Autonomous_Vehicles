@@ -1,6 +1,7 @@
 package org.autonomous_vehicles.ui;
 
 import org.autonomous_vehicles.evolution.Champion;
+import org.autonomous_vehicles.evolution.FitnessFunction;
 import org.autonomous_vehicles.evolution.GenerationStats;
 import org.autonomous_vehicles.evolution.GeneticAlgorithm;
 import org.autonomous_vehicles.evolution.NetworkInputs;
@@ -9,13 +10,16 @@ import org.autonomous_vehicles.evolution.StatsHistory;
 import org.autonomous_vehicles.geometry.Vec2;
 import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.CarAgent;
+import org.autonomous_vehicles.sim.DeathCause;
 import org.autonomous_vehicles.sim.LapReplay;
 import org.autonomous_vehicles.sim.Simulation;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -39,6 +43,8 @@ public class SimulationController {
     static final int BATCH_STEPS = 20;
     /** A longer pause between two images (window dragged, debugger) is not caught up. */
     static final double MAX_FRAME_GAP = 0.25;
+    /** Seconds a lap must gain to be a record; real gains are at least one step (1/60 s). */
+    static final double RECORD_TOLERANCE = 1e-6;
 
     private final RenderOptions renderOptions = new RenderOptions();
     private final List<Consumer<GenerationStats>> generationListeners = new ArrayList<>();
@@ -54,6 +60,9 @@ public class SimulationController {
     private Champion seed;
     private Champion seedDropped;
     private ChampionKind championKind = ChampionKind.BEST_FITNESS;
+    private double lapRecord = Double.NaN;
+    private final List<LapRecord> lapRecords = new ArrayList<>();
+    private LapRecord newLapRecord;
 
     private final LongSupplier clock;
     private double owedSteps;
@@ -126,6 +135,9 @@ public class SimulationController {
         selectedCarId = -1;
         replay = null;
         pausedTraining = null;
+        lapRecord = Double.NaN; // records compare laps of one run (same track and car)
+        lapRecords.clear();
+        newLapRecord = null;
     }
 
     /**
@@ -293,6 +305,7 @@ public class SimulationController {
         }
 
         advance(speed);
+        watchLapRecord();
     }
 
     /**
@@ -332,6 +345,8 @@ public class SimulationController {
             // Smoothed over ~10 images so the displayed value is readable.
             effectiveSpeed = Double.isNaN(effectiveSpeed) ? speedNow : 0.9 * effectiveSpeed + 0.1 * speedNow;
         }
+
+        watchLapRecord();
     }
 
     /**
@@ -347,6 +362,62 @@ public class SimulationController {
      */
     public void step() {
         advance(1);
+        watchLapRecord();
+    }
+
+    /**
+     * Looks for a lap faster than the run's record, once per image rather than per step (cheap at ×1000): live on
+     * the displayed track, so the record is announced when the car crosses the line, and in the algorithm's memory
+     * for a lap of a generation that ended within the image. Replays never set records.
+     */
+    private void watchLapRecord() {
+        if (replay != null) {
+            return;
+        }
+
+        double best = algorithm.getFastestLapTime();
+        int generation = algorithm.getFastestLapGeneration();
+        int carId = -1;
+
+        for (CarAgent agent : getDisplayedSimulation().getAgents()) {
+            double time = agent.getLapTracker().getBestLapTime();
+
+            if (!Double.isNaN(time) && (Double.isNaN(best) || time < best)) {
+                best = time;
+                generation = algorithm.getGeneration();
+                carId = agent.getId();
+            }
+        }
+
+        // The same lap can come back a few 1e-15 s apart (live vs. the generation's results): not a new record.
+        if (!Double.isNaN(best) && (Double.isNaN(lapRecord) || best < lapRecord - RECORD_TOLERANCE)) {
+            newLapRecord = new LapRecord(best, lapRecord, generation, carId);
+            lapRecords.add(newLapRecord);
+            lapRecord = best;
+        }
+    }
+
+    /**
+     * The lap record set since the last call, or null; reading it clears it, so the interface announces it once.
+     */
+    public LapRecord takeNewLapRecord() {
+        LapRecord record = newLapRecord;
+        newLapRecord = null;
+        return record;
+    }
+
+    /**
+     * Every record of the run, oldest first (each one faster than the previous).
+     */
+    public List<LapRecord> getLapRecords() {
+        return List.copyOf(lapRecords);
+    }
+
+    /**
+     * Fastest lap of the run including the generation being driven, NaN if none.
+     */
+    public double getLapRecord() {
+        return lapRecord;
     }
 
     /**
@@ -439,6 +510,34 @@ public class SimulationController {
         CarAgent focused = getFocusedAgent();
         return focused == null ? null
                 : NetworkSnapshot.of(focused.getBrain().getNetwork(), focused.getBrain().getLastInputs());
+    }
+
+    /**
+     * Race figures of the inspected car (rank, distance, score so far…), or null if there is none.
+     */
+    public CarDetails getFocusedDetails() {
+        CarAgent focused = getFocusedAgent();
+        Simulation displayed = getDisplayedSimulation();
+        FitnessFunction fitness = replay == null ? config.createFitness() : replay.config().createFitness();
+        return focused == null ? null : CarDetails.of(focused, displayed.getAgents(), fitness, lapRecord);
+    }
+
+    /**
+     * How the cars of the displayed track are doing: {@link DeathCause#ALIVE} counts the cars still driving.
+     */
+    public Map<DeathCause, Integer> getDeathCounts() {
+        Map<DeathCause, Integer> counts = new EnumMap<>(DeathCause.class);
+
+        for (DeathCause cause : DeathCause.values()) {
+            counts.put(cause, 0);
+        }
+
+        for (CarAgent agent : getDisplayedSimulation().getAgents()) {
+            DeathCause cause = agent.getCar().isAlive() ? DeathCause.ALIVE : agent.getDeathCause();
+            counts.merge(cause == null ? DeathCause.ALIVE : cause, 1, Integer::sum);
+        }
+
+        return counts;
     }
 
     public SimulationFrame frame() {

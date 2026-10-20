@@ -1,6 +1,11 @@
 package org.autonomous_vehicles.ui;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.FadeTransition;
+import javafx.animation.ParallelTransition;
+import javafx.animation.PauseTransition;
+import javafx.animation.ScaleTransition;
+import javafx.animation.SequentialTransition;
 import javafx.application.Application;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -24,15 +29,19 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.neural.NetworkIO;
+import org.autonomous_vehicles.sim.CarAgent;
 import org.autonomous_vehicles.sim.CarSpec;
 import org.autonomous_vehicles.sim.SimulationSettings;
 import org.autonomous_vehicles.sim.TireCompound;
@@ -64,6 +73,17 @@ public class MainApp extends Application {
     private final Label message = new Label();
     private final Label carSummary = new Label();
     private final FpsCounter fps = new FpsCounter();
+    private final Label recordToast = new Label();
+    private SequentialTransition toastAnimation;
+
+    private static final String[] CAR_FIELDS = {"Position", "Score so far", "Checkpoints", "Laps", "Distance",
+            "On track", "Mean speed", "Last lap", "Best lap", "Gap to record", "Off the line", "Steering jitter"};
+    private final Label carTitle = new Label();
+    private final Label[] carValues = new Label[CAR_FIELDS.length];
+    private final Label brainTitle = new Label();
+    private final Label brainDecision = new Label();
+    private final Label brainInfluences = new Label();
+    private final Label brainSaturation = new Label();
 
     private SimulationController controller;
     private TrackView trackView;
@@ -92,9 +112,11 @@ public class MainApp extends Application {
         Dashboard dashboard = new Dashboard(390, 300);
         NetworkView networkView = new NetworkView(390, 300);
 
-        BorderPane root = new BorderPane(trackView);
+        StackPane trackArea = new StackPane(trackView, recordToast());
+        BorderPane root = new BorderPane(trackArea);
         root.setTop(toolbar(stage, root, drawer));
-        root.setRight(tabs(dashboard, networkView));
+        TabPane tabs = tabs(dashboard, networkView);
+        root.setRight(tabs);
         root.setBottom(statusBar());
 
         loadToolbar();
@@ -108,10 +130,28 @@ public class MainApp extends Application {
                 controller.tick(previous < 0 ? 0.0 : (now - previous) / 1e9);
                 previous = now;
                 trackView.draw(controller.frame(), overlay());
-                statsPanel.refresh(controller);
-                dashboard.draw(controller.getFocusedTelemetry());
-                networkView.draw(controller.getFocusedNetwork(), controller.getFocusedInputLabels());
+                // Only the visible tab is refreshed: the hidden ones catch up as soon as they are shown.
+                switch (tabs.getSelectionModel().getSelectedIndex()) {
+                    case 0 -> {
+                        dashboard.draw(controller.getFocusedTelemetry());
+                        refreshCarDetails(controller.getFocusedDetails());
+                    }
+                    case 1 -> statsPanel.refresh(controller);
+                    default -> {
+                        NetworkSnapshot snapshot = controller.getFocusedNetwork();
+                        List<String> labels = controller.getFocusedInputLabels();
+                        networkView.draw(snapshot, labels);
+                        refreshBrain(snapshot == null ? null : BrainSummary.of(snapshot, labels));
+                    }
+                }
+
                 status.setText(statusLine());
+                LapRecord record = controller.takeNewLapRecord();
+
+                if (record != null) {
+                    announce(record);
+                }
+
                 Champion dropped = controller.takeDroppedSeed();
 
                 if (dropped != null) {
@@ -470,29 +510,149 @@ public class MainApp extends Application {
         return item;
     }
 
+    /**
+     * Banner over the top of the track announcing a new lap record; hidden (and click-through) the rest of the time.
+     */
+    private Label recordToast() {
+        recordToast.setStyle("-fx-background-color: rgba(250, 204, 21, 0.95); -fx-background-radius: 10;"
+                + " -fx-border-color: #b45309; -fx-border-radius: 10; -fx-border-width: 2; -fx-padding: 8 18 8 18;"
+                + " -fx-font-size: 18px; -fx-font-weight: bold; -fx-text-fill: #1f2328;");
+        recordToast.setOpacity(0);
+        recordToast.setMouseTransparent(true);
+        StackPane.setAlignment(recordToast, Pos.TOP_CENTER);
+        StackPane.setMargin(recordToast, new Insets(16, 0, 0, 0));
+
+        FadeTransition in = new FadeTransition(Duration.millis(180), recordToast);
+        in.setToValue(1);
+        ScaleTransition pop = new ScaleTransition(Duration.millis(180), recordToast);
+        pop.setFromX(0.8);
+        pop.setFromY(0.8);
+        pop.setToX(1);
+        pop.setToY(1);
+        FadeTransition out = new FadeTransition(Duration.millis(700), recordToast);
+        out.setToValue(0);
+        toastAnimation = new SequentialTransition(new ParallelTransition(in, pop), new PauseTransition(Duration.seconds(2.5)),
+                out);
+        return recordToast;
+    }
+
+    private void announce(LapRecord record) {
+        recordToast.setText((record.isFirstLap() ? "FIRST LAP  " : "NEW BEST LAP  ") + record.label());
+        toastAnimation.playFromStart();
+        statsPanel.flashRecord();
+        message.setText((record.isFirstLap() ? "First lap of the run: " : "New best lap: ") + record.label());
+    }
+
     private TabPane tabs(Dashboard dashboard, NetworkView networkView) {
         Label carHint = new Label("Showing the best car on track. Click a car to follow another one.");
         carHint.setWrapText(true);
         carHint.setStyle("-fx-text-fill: #57606a;");
         carSummary.setWrapText(true);
-        VBox carTab = new VBox(10, dashboard, carSummary, carHint);
+        carSummary.setStyle("-fx-text-fill: #57606a;");
+        carTitle.setStyle("-fx-font-weight: bold;");
+        GridPane details = new GridPane(12, 4);
+
+        for (int i = 0; i < CAR_FIELDS.length; i++) {
+            Label key = new Label(CAR_FIELDS[i]);
+            key.setStyle("-fx-text-fill: #57606a;");
+            carValues[i] = new Label("–");
+            carValues[i].setStyle("-fx-font-weight: bold;");
+            details.add(key, 2 * (i % 2), i / 2);
+            details.add(carValues[i], 2 * (i % 2) + 1, i / 2);
+        }
+
+        Label detailsHint = new Label("Off the line = mean distance to the line between checkpoints, in % of the half "
+                + "width. Steering jitter = mean change of the steering per step (0 = smooth, 2 = full left/right).");
+        detailsHint.setWrapText(true);
+        detailsHint.setStyle("-fx-text-fill: #57606a; -fx-font-size: 11px;");
+        VBox carTab = new VBox(8, dashboard, carTitle, details, detailsHint, carSummary, carHint);
         carTab.setPadding(new Insets(10));
+        ScrollPane carScroll = new ScrollPane(carTab);
+        carScroll.setFitToWidth(true);
 
         Label brainHint = new Label("Left: the distance sensors, then speed, fuel, tyre temperature (0.5 = middle of "
                 + "the grip window), wear and sliding when enabled. Right: steering and throttle. "
-                + "Lines: blue = positive weight, red = negative, thicker = stronger. Circles light up with activity.");
+                + "Lines: blue = positive weight, red = negative, thicker = stronger. Circles light up with activity. "
+                + "Influence = |input| × weights leaving it: what the first layer listens to right now.");
         brainHint.setWrapText(true);
         brainHint.setStyle("-fx-text-fill: #57606a;");
-        VBox brainTab = new VBox(10, networkView, brainHint);
+        brainTitle.setStyle("-fx-font-weight: bold;");
+        brainDecision.setStyle("-fx-font-size: 15px; -fx-font-weight: bold;");
+        brainInfluences.setStyle("-fx-font-family: 'Consolas', monospace; -fx-font-size: 11px;");
+        brainSaturation.setWrapText(true);
+        VBox brainTab = new VBox(8, brainTitle, networkView, brainDecision, new Label("Most influential inputs"),
+                brainInfluences, brainSaturation, brainHint);
         brainTab.setPadding(new Insets(10));
+        ScrollPane brainScroll = new ScrollPane(brainTab);
+        brainScroll.setFitToWidth(true);
 
         ScrollPane progress = new ScrollPane(statsPanel);
         progress.setFitToWidth(true);
 
-        TabPane tabs = new TabPane(new Tab("Car", carTab), new Tab("Progress", progress), new Tab("Brain", brainTab));
+        TabPane tabs = new TabPane(new Tab("Car", carScroll), new Tab("Progress", progress),
+                new Tab("Brain", brainScroll));
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         tabs.setPrefWidth(415);
         return tabs;
+    }
+
+    private void refreshCarDetails(CarDetails d) {
+        if (d == null) {
+            carTitle.setText("No car on track");
+            return;
+        }
+
+        carTitle.setText("Car #" + d.id() + (controller.hasSelection() ? " · selected by you" : " · best car on track"));
+        String gap = Double.isNaN(d.gapToRecord()) ? "–" : Math.abs(d.gapToRecord()) < 0.005 ? "holds the record"
+                : String.format(Locale.ROOT, "+%.2f s", d.gapToRecord());
+        String[] values = {
+                "P" + d.rank() + " / " + d.carCount(),
+                String.format(Locale.ROOT, "%.1f", d.fitness()),
+                String.format(Locale.ROOT, "%.1f (%d / lap)", d.progress(), d.checkpoints()),
+                String.format(Locale.ROOT, "%d + %.0f %%", d.laps(), 100 * d.lapFraction()),
+                String.format(Locale.ROOT, "%.0f m", d.distance()),
+                String.format(Locale.ROOT, "%.1f s", d.timeAlive()),
+                String.format(Locale.ROOT, "%.0f km/h", d.meanSpeedKmh()),
+                Double.isNaN(d.lastLapTime()) ? "–" : Dashboard.lapTime(d.lastLapTime()),
+                Double.isNaN(d.bestLapTime()) ? "–" : Dashboard.lapTime(d.bestLapTime()),
+                gap,
+                String.format(Locale.ROOT, "%.0f %%", 100 * d.deviation()),
+                String.format(Locale.ROOT, "%.3f", d.steeringNoise()),
+        };
+
+        for (int i = 0; i < values.length; i++) {
+            carValues[i].setText(values[i]);
+        }
+    }
+
+    private void refreshBrain(BrainSummary b) {
+        if (b == null) {
+            brainTitle.setText("No decision yet");
+            brainDecision.setText("");
+            brainInfluences.setText("");
+            brainSaturation.setText("");
+            return;
+        }
+
+        CarAgent focused = controller.getFocusedAgent();
+        brainTitle.setText(String.format(Locale.ROOT, "Network %s · %d parameters%s", b.architecture(),
+                b.parameterCount(), focused == null ? "" : " · car #" + focused.getId()));
+        brainDecision.setText("Decision: " + b.decision());
+        StringBuilder lines = new StringBuilder();
+
+        for (int i = 0; i < Math.min(4, b.influences().size()); i++) {
+            BrainSummary.Influence influence = b.influences().get(i);
+            lines.append(String.format(Locale.ROOT, "%-9s %3.0f %%  (input %.2f)", influence.label(),
+                    100 * influence.share(), influence.value()));
+
+            if (i < Math.min(4, b.influences().size()) - 1) {
+                lines.append('\n');
+            }
+        }
+
+        brainInfluences.setText(lines.toString());
+        brainSaturation.setText(String.format(Locale.ROOT, "Saturated hidden neurons: %.0f %% (stuck near ±1, they no "
+                + "longer react to small changes of the inputs)", 100 * b.saturated()));
     }
 
     private HBox statusBar() {
@@ -515,7 +675,7 @@ public class MainApp extends Application {
                     controller.getGeneration());
         }
 
-        double bestLap = controller.getHistory().bestLapTimeEver();
+        double bestLap = controller.getLapRecord(); // live: includes the generation being driven
         return String.format(Locale.ROOT, "Generation %d  ·  %d / %d cars on track  ·  best lap %s  ·  %s",
                 controller.getGeneration(), controller.getAliveCount(), controller.getConfig().populationSize(),
                 Double.isNaN(bestLap) ? "–" : Dashboard.lapTime(bestLap),
