@@ -28,6 +28,7 @@ public class CompositeFitnessTest {
         assertEquals(0.0, CompositeFitness.only(FitnessComponent.STAGNATION).evaluate(result), 1e-12);
         assertEquals(-0.3, CompositeFitness.only(FitnessComponent.CENTERLINE).evaluate(result), 1e-12);
         assertEquals(-0.2, CompositeFitness.only(FitnessComponent.STEERING).evaluate(result), 1e-12);
+        assertEquals((60 - 15.0) + (60 - 30.0), CompositeFitness.only(FitnessComponent.TIME_SAVED).evaluate(result), 1e-12);
     }
 
     @Test
@@ -79,5 +80,20 @@ public class CompositeFitnessTest {
         assertEquals(1.0, base.weight(FitnessComponent.PROGRESS), 0.0);
         assertThrows(IllegalArgumentException.class, () -> base.withWeight(FitnessComponent.LAPS, -1.0));
         assertThrows(IllegalArgumentException.class, () -> new CompositeFitness(Map.of(FitnessComponent.LAPS, Double.NaN)));
+    }
+
+    @Test
+    public void testTimeSavedIsOffByDefaultAndMakesASecondWorthACheckpoint() {
+        assertEquals(0.0, CompositeFitness.defaults().weight(FitnessComponent.TIME_SAVED), 0.0, "assignment weights");
+
+        CompositeFitness racing = CompositeFitness.defaults().withWeight(FitnessComponent.TIME_SAVED, 1.0)
+                .withWeight(FitnessComponent.CENTERLINE, 0.0);
+        AgentResult centred = result(16, List.of(41.0), 10.0, 0.0, 0.1, DeathCause.FINISHED);
+        AgentResult racingLine = result(16, List.of(40.0), 10.0, 0.0, 0.6, DeathCause.FINISHED);
+
+        assertTrue(CompositeFitness.defaults().evaluate(centred) > CompositeFitness.defaults().evaluate(racingLine),
+                "default weights: the centre-line penalty outweighs one second");
+        assertEquals(1.0 + 10.0 / 60.0, racing.evaluate(racingLine) - racing.evaluate(centred), 1e-12,
+                "1 s saved = 1 point (+ the lap time term)");
     }
 }

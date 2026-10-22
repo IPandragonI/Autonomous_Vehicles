@@ -68,6 +68,19 @@ public enum FitnessComponent implements FitnessFunction {
         public double evaluate(AgentResult result) {
             return -result.meanSteeringChange() / 2.0;
         }
+    },
+    /**
+     * Σ (maxTime - lapTime) over completed laps, in seconds: one second saved on a lap is worth one checkpoint at
+     * weight 1, whatever the time limit. {@link #LAP_TIME} divides by the time limit (470 s on a 4 km circuit for a
+     * grip-limited car), so one second per lap is worth 0.02 there — less than the centre-line penalty a racing line
+     * costs (0.5 × ~0.5): a car that uses the track width to go faster scored lower. Off by default (the assignment's
+     * weights); {@code QuickSetup} turns it on, and the centre-line penalty off, for grip-limited cars.
+     */
+    TIME_SAVED("Time saved (s)", 0.0) {
+        @Override
+        public double evaluate(AgentResult result) {
+            return result.lapTimes().stream().mapToDouble(time -> Math.max(0.0, result.maxTime() - time)).sum();
+        }
     };
 
     private final String label;

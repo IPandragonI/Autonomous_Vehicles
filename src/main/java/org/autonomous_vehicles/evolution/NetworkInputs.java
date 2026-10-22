@@ -2,6 +2,7 @@ package org.autonomous_vehicles.evolution;
 
 import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.CarBrain;
+import org.autonomous_vehicles.sim.TrackPreview;
 import org.autonomous_vehicles.util.Rng;
 
 import java.util.ArrayList;
@@ -10,7 +11,8 @@ import java.util.List;
 
 /**
  * Operations on the input side of a driving network, whose inputs are laid out as rays, then the speed (optional),
- * then the {@link CarBrain#CAR_STATE_INPUTS} car state inputs (optional) — see {@link SimulationConfig#inputSize()}.
+ * then the {@link CarBrain#CAR_STATE_INPUTS} car state inputs (optional), then the road-ahead readings (optional) —
+ * see {@link SimulationConfig#inputSize()}.
  * <p>
  * A weight of zero from an input makes the network blind to it. Two uses:
  * <ul>
@@ -46,12 +48,35 @@ public final class NetworkInputs {
     }
 
     /**
+     * Same network with every first-layer weight from the road-ahead readings set to 0 (no effect without them).
+     */
+    public static NeuralNetwork silenceTrackPreview(NeuralNetwork network, SimulationConfig config) {
+        if (!config.useTrackPreview()) {
+            return network;
+        }
+
+        int first = config.inputSize() - TrackPreview.INPUTS;
+        double[][][] weights = network.getWeights();
+
+        for (double[] neuron : weights[0]) {
+            Arrays.fill(neuron, first, first + TrackPreview.INPUTS, 0.0);
+        }
+
+        return build(network, network.getArchitecture(), weights, network.getBiases());
+    }
+
+    /**
      * {@code network}, built for {@code source}, rebuilt for {@code target}: same weights, plus zero weights from the
      * inputs {@code target} has and {@code source} lacks. Returns the network itself when the shapes already match,
-     * and null when it cannot be adapted (other ray count or hidden layers, or {@code target} lacks one of its
-     * inputs — dropping an input would change how it drives).
+     * and null when it cannot be adapted (other ray count, ray layout, hidden layers or steering, or {@code target}
+     * lacks one of its inputs — dropping an input would change how it drives).
      */
     public static NeuralNetwork adapt(NeuralNetwork network, SimulationConfig source, SimulationConfig target) {
+        // Other ray angles or another meaning of the steering output: same shape, but it would not drive as before.
+        if (source.rayLayout() != target.rayLayout() || source.gripSteering() != target.gripSteering()) {
+            return null;
+        }
+
         if (Arrays.equals(network.getArchitecture(), target.architecture())) {
             return network;
         }
@@ -60,7 +85,8 @@ public final class NetworkInputs {
                 || source.rayCount() != target.rayCount()
                 || !Arrays.equals(source.hiddenLayers(), target.hiddenLayers())
                 || (source.useSpeedInput() && !target.useSpeedInput())
-                || (source.useCarStateInputs() && !target.useCarStateInputs())) {
+                || (source.useCarStateInputs() && !target.useCarStateInputs())
+                || (source.useTrackPreview() && !target.useTrackPreview())) {
             return null;
         }
 
@@ -73,6 +99,7 @@ public final class NetworkInputs {
 
         int targetSpeed = rays;
         int targetState = rays + (target.useSpeedInput() ? 1 : 0);
+        int targetPreview = targetState + (target.useCarStateInputs() ? CarBrain.CAR_STATE_INPUTS : 0);
         int next = rays;
 
         if (source.useSpeedInput()) {
@@ -82,6 +109,12 @@ public final class NetworkInputs {
         if (source.useCarStateInputs()) {
             for (int j = 0; j < CarBrain.CAR_STATE_INPUTS; j++) {
                 map[next++] = targetState + j;
+            }
+        }
+
+        if (source.useTrackPreview()) {
+            for (int j = 0; j < TrackPreview.INPUTS; j++) {
+                map[next++] = targetPreview + j;
             }
         }
 
@@ -108,14 +141,15 @@ public final class NetworkInputs {
     static Population randomPopulation(SimulationConfig config, Rng rng) {
         Population random = new Population(config.populationSize(), config.architecture(), rng);
 
-        if (!config.useCarStateInputs()) {
+        if (!config.useCarStateInputs() && !config.useTrackPreview()) {
             return random;
         }
 
         List<Individual> blind = new ArrayList<>(random.size());
 
         for (Individual individual : random.getIndividuals()) {
-            blind.add(new Individual(silenceCarState(individual.getNetwork(), config)));
+            NeuralNetwork network = silenceCarState(individual.getNetwork(), config);
+            blind.add(new Individual(silenceTrackPreview(network, config)));
         }
 
         return new Population(blind);

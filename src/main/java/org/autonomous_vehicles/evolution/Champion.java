@@ -5,6 +5,7 @@ import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.neural.ReLU;
 import org.autonomous_vehicles.neural.Sigmoid;
 import org.autonomous_vehicles.neural.Tanh;
+import org.autonomous_vehicles.sim.DynamicModel;
 import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.Simulation;
 import org.autonomous_vehicles.sim.SimulationSettings;
@@ -40,7 +41,11 @@ import java.util.Map;
 public record Champion(SimulationConfig config, NeuralNetwork network, int generation, double fitness) {
 
     public static final String FORMAT = "autonomous-vehicles/champion";
-    public static final int VERSION = 1;
+    /**
+     * 2: track preview, ray layout and grip steering (absent from version 1 files, which never used them), and the
+     * tyre wear multiplier in "rules" (absent = ×1, the rates those files were evaluated with).
+     */
+    public static final int VERSION = 2;
     public static final String EXTENSION = ".json";
 
     public Champion {
@@ -117,8 +122,7 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
             throw new IllegalArgumentException("Track '" + name + "' is not available: import it first.", e);
         }
 
-        return new Simulation(track, List.of(network.copy()), config.createSensor(), config.useSpeedInput(),
-                config.useCarStateInputs(), config.settings(), config.createVehicle());
+        return config.createSimulation(track, List.of(network.copy()));
     }
 
     public void save(Path path) throws IOException {
@@ -175,7 +179,9 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
             throw new IllegalArgumentException("Not a champion file (expected \"format\": \"" + FORMAT + "\").");
         }
 
-        if (integer(root, "version") != VERSION) {
+        int version = integer(root, "version");
+
+        if (version < 1 || version > VERSION) {
             throw new IllegalArgumentException("Unsupported champion file version " + root.get("version") + ".");
         }
 
@@ -257,8 +263,10 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
         json.put("hiddenLayers", ints(config.hiddenLayers()));
         json.put("useSpeedInput", config.useSpeedInput());
         json.put("useCarStateInputs", config.useCarStateInputs());
+        json.put("useTrackPreview", config.useTrackPreview());
         json.put("rayCount", config.rayCount());
         json.put("rayRange", config.rayRange());
+        json.put("rayLayout", config.rayLayout().name());
         json.put("mutationRate", config.mutationRate());
         json.put("mutationStrength", config.mutationStrength());
         json.put("noise", config.noise().name());
@@ -276,7 +284,10 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
         Map<String, Object> rules = new LinkedHashMap<>();
         rules.put("fuelAutonomy", config.rules().fuelAutonomy());
         rules.put("tyreTemperature", config.rules().tyreTemperature());
+        rules.put("tyreWear", config.rules().tyreWear());
+        rules.put("tyreHeating", config.rules().tyreHeating());
         json.put("rules", rules);
+        json.put("gripSteering", config.gripSteering());
         json.put("seed", config.seed());
         return json;
     }
@@ -308,7 +319,12 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
                 bool(json, "useSpeedInput"),
                 // absent from files written before the car state inputs existed: those networks never read it
                 json.containsKey("useCarStateInputs") && bool(json, "useCarStateInputs"),
+                // version 1 files predate the track preview, the forward rays and grip steering: none was used
+                json.containsKey("useTrackPreview") && bool(json, "useTrackPreview"),
                 integer(json, "rayCount"), number(json, "rayRange"),
+                json.containsKey("rayLayout")
+                        ? constant(SimulationConfig.RayLayout.class, string(json, "rayLayout"), "ray layout")
+                        : SimulationConfig.RayLayout.EVEN,
                 number(json, "mutationRate"), number(json, "mutationStrength"),
                 constant(MutationOperator.Noise.class, string(json, "noise"), "noise"),
                 constant(SelectionType.class, string(json, "selection"), "selection"),
@@ -317,6 +333,7 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
                 constant(SimulationConfig.FitnessMode.class, string(json, "fitnessMode"), "fitness mode"),
                 new CompositeFitness(weights), tracks, settings, string(json, "carType"),
                 constant(TireCompound.class, string(json, "tire"), "tyre compound"), rules(json),
+                json.containsKey("gripSteering") && bool(json, "gripSteering"),
                 longValue(json, "seed"));
     }
 
@@ -330,7 +347,10 @@ public record Champion(SimulationConfig config, NeuralNetwork network, int gener
         }
 
         Map<String, Object> rules = object(json.get("rules"), "rules");
-        return new RaceRules(number(rules, "fuelAutonomy"), bool(rules, "tyreTemperature"));
+        // Files written before the wear and heating settings were evaluated with the original rates.
+        return new RaceRules(number(rules, "fuelAutonomy"), bool(rules, "tyreTemperature"),
+                rules.containsKey("tyreWear") ? number(rules, "tyreWear") : 1.0,
+                rules.containsKey("tyreHeating") ? number(rules, "tyreHeating") : DynamicModel.TYRE_HEATING);
     }
 
     private static String activationName(ActivationFunction activation) {

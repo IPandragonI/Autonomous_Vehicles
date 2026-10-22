@@ -2,10 +2,12 @@ package org.autonomous_vehicles.evolution;
 
 import org.autonomous_vehicles.neural.NeuralNetwork;
 import org.autonomous_vehicles.sim.AgentResult;
+import org.autonomous_vehicles.sim.DynamicModel;
 import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.Simulation;
 import org.autonomous_vehicles.sim.SimulationSettings;
 import org.autonomous_vehicles.sim.TireCompound;
+import org.autonomous_vehicles.sim.TrackPreview;
 import org.autonomous_vehicles.sim.Vehicles;
 import org.autonomous_vehicles.util.Rng;
 import org.junit.jupiter.api.Test;
@@ -95,6 +97,21 @@ public class ChampionTest {
 
         assertEquals(new RaceRules(12, true), Champion.fromJson(json).config().rules());
 
+        SimulationConfig reduced = config.toBuilder().rules(new RaceRules(12, true, 0.25)).build();
+        String withWear = Champion.of(evolved(reduced, 1)).toJson();
+        assertEquals(0.25, Champion.fromJson(withWear).config().rules().tyreWear(), 0.0);
+        String beforeWear = withWear.replaceFirst(",\n\\s*\"tyreWear\": [0-9.]+", "");
+        assertFalse(beforeWear.contains("tyreWear"), beforeWear);
+        assertEquals(1.0, Champion.fromJson(beforeWear).config().rules().tyreWear(), 0.0,
+                "Files from before the wear setting were evaluated with the original rates.");
+
+        SimulationConfig recalibrated = config.toBuilder().rules(RaceRules.defaults()).build();
+        String withHeating = Champion.of(evolved(recalibrated, 1)).toJson();
+        assertEquals(RaceRules.defaults(), Champion.fromJson(withHeating).config().rules());
+        String beforeHeating = withHeating.replaceFirst(",\n\\s*\"tyreHeating\": [0-9.]+", "");
+        assertFalse(beforeHeating.contains("tyreHeating"), beforeHeating);
+        assertEquals(DynamicModel.TYRE_HEATING, Champion.fromJson(beforeHeating).config().rules().tyreHeating(), 0.0);
+
         String legacy = json.replaceFirst("\"rules\": \\{[^}]*},\n\\s*", "");
         assertFalse(legacy.contains("\"rules\""), legacy);
         assertEquals(RaceRules.NONE, Champion.fromJson(legacy).config().rules(),
@@ -117,6 +134,33 @@ public class ChampionTest {
         String legacy = Champion.of(evolved(config(), 1)).toJson().replace("  \"useCarStateInputs\": false,\n", "");
         assertFalse(legacy.contains("useCarStateInputs"), legacy);
         assertFalse(Champion.fromJson(legacy).config().useCarStateInputs());
+    }
+
+    @Test
+    public void testRacingOptionsAreSavedAndReplayedAndVersion1FilesHaveNone() {
+        SimulationConfig config = config().toBuilder().tracks("hairpin").carType("formula").useSpeedInput(true)
+                .useTrackPreview(true).rayCount(7).rayRange(150).rayLayout(SimulationConfig.RayLayout.FORWARD)
+                .gripSteering(true).compositeFitness(CompositeFitness.defaults()
+                        .withWeight(FitnessComponent.TIME_SAVED, 1.0)).build();
+        GeneticAlgorithm algorithm = evolved(config, 2);
+        Champion loaded = Champion.fromJson(Champion.of(algorithm).toJson());
+
+        assertEquals(config.toBuilder().seed(loaded.config().seed()).build(), loaded.config());
+        assertTrue(loaded.config().useTrackPreview() && loaded.config().gripSteering());
+        assertEquals(SimulationConfig.RayLayout.FORWARD, loaded.config().rayLayout());
+        assertEquals(7 + 1 + TrackPreview.INPUTS, loaded.network().getArchitecture()[0], "rays + speed + preview");
+
+        Simulation replay = loaded.replay();
+        replay.runUntilAllDead();
+        assertSameDrive(algorithm.getChampion().getPrimaryResult(), replay.getAgents().getFirst().result());
+
+        String version1 = Champion.of(evolved(config(), 1)).toJson().replace("\"version\": 2", "\"version\": 1")
+                .replace("  \"useTrackPreview\": false,\n", "").replace("  \"rayLayout\": \"EVEN\",\n", "")
+                .replace("  \"gripSteering\": false,\n", "");
+        assertFalse(version1.contains("gripSteering") || version1.contains("rayLayout"), version1);
+        SimulationConfig legacy = Champion.fromJson(version1).config();
+        assertFalse(legacy.useTrackPreview() || legacy.gripSteering());
+        assertEquals(SimulationConfig.RayLayout.EVEN, legacy.rayLayout());
     }
 
     @Test
@@ -151,7 +195,10 @@ public class ChampionTest {
         String json = Champion.of(evolved(config(), 1)).toJson();
 
         assertMessage("Not a champion file", json.replace(Champion.FORMAT, "something-else"));
-        assertMessage("Unsupported champion file version", json.replace("\"version\": 1", "\"version\": 2"));
+        String version = "\"version\": " + Champion.VERSION;
+        assertMessage("Unsupported champion file version",
+                json.replace(version, "\"version\": " + (Champion.VERSION + 1)));
+        assertMessage("Unsupported champion file version", json.replace(version, "\"version\": 0"));
         assertMessage("Missing field 'seed'", json.replace("\"seed\"", "\"sed\""));
         assertMessage("Unknown activation", json.replace("\"tanh\"", "\"swish\""));
         assertMessage("Unknown tyre compound", json.replace("\"MEDIUM\"", "\"WET\""));

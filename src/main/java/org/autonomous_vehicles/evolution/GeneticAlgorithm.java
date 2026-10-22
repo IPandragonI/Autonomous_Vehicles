@@ -65,8 +65,7 @@ public class GeneticAlgorithm {
         this.config = config;
         this.rng = new Rng(config.seed());
         this.tracks = config.tracks().stream().map(Tracks::byName).toList();
-        this.evaluator = new Evaluator(tracks, config.createSensor(), config.useSpeedInput(),
-                config.useCarStateInputs(), config.settings(), config.createFitness(), config.createVehicle());
+        this.evaluator = config.createEvaluator(tracks);
 
         if (seed == null) {
             this.population = NetworkInputs.randomPopulation(config, rng);

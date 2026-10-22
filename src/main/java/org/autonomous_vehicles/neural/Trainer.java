@@ -91,6 +91,78 @@ public class Trainer {
         }
     }
 
+    /**
+     * One pass of mini-batch gradient descent over examples with several outputs (e.g. steer and throttle), in the
+     * given order: loss = mean over outputs of the squared error, gradients averaged over each batch.
+     */
+    public void trainMiniBatch(double[][] inputs, double[][] targets, int batchSize) {
+        validateExamples(inputs, targets);
+
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("Batch size must be positive.");
+        }
+
+        for (int start = 0; start < inputs.length; start += batchSize) {
+            int end = Math.min(start + batchSize, inputs.length);
+            double[] accumulatedGradients = new double[network.getParameterCount()];
+
+            for (int i = start; i < end; i++) {
+                double[] predictions = network.forward(inputs[i]);
+                double[] outputGradients = new double[predictions.length];
+
+                for (int k = 0; k < predictions.length; k++) {
+                    outputGradients[k] = Loss.mseDerivative(predictions[k], targets[i][k]) / predictions.length;
+                }
+
+                network.backward(outputGradients);
+                double[] gradients = network.getGradientGenome();
+
+                for (int j = 0; j < gradients.length; j++) {
+                    accumulatedGradients[j] += gradients[j];
+                }
+            }
+
+            for (int j = 0; j < accumulatedGradients.length; j++) {
+                accumulatedGradients[j] /= end - start;
+            }
+
+            network.applyGradients(accumulatedGradients, learningRate);
+        }
+    }
+
+    /**
+     * Mean over examples and outputs of the squared error.
+     */
+    public double evaluateLoss(double[][] inputs, double[][] targets) {
+        validateExamples(inputs, targets);
+        double total = 0.0;
+
+        for (int i = 0; i < inputs.length; i++) {
+            double[] predictions = network.forward(inputs[i]);
+
+            for (int k = 0; k < predictions.length; k++) {
+                total += Loss.mse(predictions[k], targets[i][k]) / predictions.length;
+            }
+        }
+
+        return total / inputs.length;
+    }
+
+    private void validateExamples(double[][] inputs, double[][] targets) {
+        int[] architecture = network.getArchitecture();
+
+        if (inputs == null || targets == null || inputs.length == 0 || inputs.length != targets.length) {
+            throw new IllegalArgumentException("Need matching, non-empty inputs and targets.");
+        }
+
+        for (int i = 0; i < inputs.length; i++) {
+            if (inputs[i] == null || inputs[i].length != architecture[0] || targets[i] == null
+                    || targets[i].length != architecture[architecture.length - 1]) {
+                throw new IllegalArgumentException("Example " + i + " does not match the network's inputs or outputs.");
+            }
+        }
+    }
+
     public double evaluateLoss(LogicDataset dataset) {
         validateDataset(dataset);
 

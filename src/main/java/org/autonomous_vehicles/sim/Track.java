@@ -22,15 +22,29 @@ public class Track {
     private final double startAngle;
     private final List<Checkpoint> checkpoints;
     private final WallGrid wallGrid;
+    /** Null for a track with fewer than three checkpoints and no centre line. */
+    private final TrackPreview preview;
 
     public Track(List<Vec2> outerWall, List<Vec2> innerWall, Vec2 startPosition, double startAngle) {
         this("custom", outerWall, innerWall, startPosition, startAngle, List.of());
     }
 
+    /**
+     * Track whose centre line (for {@link #getPreview()}) is approximated by the loop through the checkpoint centres.
+     */
     public Track(String name, List<Vec2> outerWall, List<Vec2> innerWall, Vec2 startPosition, double startAngle,
                  List<Checkpoint> checkpoints) {
+        this(name, outerWall, innerWall, startPosition, startAngle, checkpoints,
+                checkpoints == null ? null : checkpoints.stream().map(Checkpoint::midpoint).toList());
+    }
+
+    /**
+     * @param centerline closed centre line in driving order, read by {@link TrackPreview}
+     */
+    public Track(String name, List<Vec2> outerWall, List<Vec2> innerWall, Vec2 startPosition, double startAngle,
+                 List<Checkpoint> checkpoints, List<Vec2> centerline) {
         if (name == null || outerWall == null || innerWall == null || startPosition == null
-                || !Double.isFinite(startAngle) || checkpoints == null) {
+                || !Double.isFinite(startAngle) || checkpoints == null || centerline == null) {
             throw new IllegalArgumentException("Track arguments must be valid.");
         }
 
@@ -69,6 +83,7 @@ public class Track {
         allWalls.addAll(innerSegments);
         this.walls = List.copyOf(allWalls);
         this.wallGrid = new WallGrid(this.walls);
+        this.preview = centerline.size() >= 3 ? new TrackPreview(centerline) : null;
     }
 
     private static void validateWall(List<Vec2> wall) {
@@ -221,5 +236,18 @@ public class Track {
 
     public List<Checkpoint> getCheckpoints() {
         return checkpoints;
+    }
+
+    /**
+     * The road-ahead observation of this track.
+     *
+     * @throws IllegalStateException if the track has no centre line (fewer than three checkpoints)
+     */
+    public TrackPreview getPreview() {
+        if (preview == null) {
+            throw new IllegalStateException("Track '" + name + "' has no centre line to preview.");
+        }
+
+        return preview;
     }
 }

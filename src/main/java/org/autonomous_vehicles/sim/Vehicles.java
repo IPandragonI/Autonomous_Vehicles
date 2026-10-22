@@ -60,6 +60,14 @@ public final class Vehicles {
      * @param rules fuel and tyre temperature, ignored by the kinematic model
      */
     public static VehicleModel create(String type, TireCompound tire, RaceRules rules) {
+        return create(type, tire, rules, false);
+    }
+
+    /**
+     * @param gripSteering steering relative to the grip (see {@link DynamicModel#steeringCurvature}), ignored by the
+     *                     kinematic model
+     */
+    public static VehicleModel create(String type, TireCompound tire, RaceRules rules, boolean gripSteering) {
         if (KINEMATIC.equals(type)) {
             return KinematicModel.INSTANCE;
         }
@@ -70,6 +78,6 @@ public final class Vehicles {
             throw new IllegalArgumentException("Unknown car type '" + type + "'; known types: " + TYPES);
         }
 
-        return new DynamicModel(spec, tire, rules);
+        return new DynamicModel(spec, tire, rules, gripSteering);
     }
 }

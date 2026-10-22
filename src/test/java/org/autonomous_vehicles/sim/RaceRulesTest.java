@@ -58,6 +58,29 @@ public class RaceRulesTest {
     }
 
     @Test
+    public void testRecalibratedHeatingKeepsLimitDrivingInsideTheWindowWhereTheOriginalOverheated() {
+        assertEquals(RaceRules.DEFAULT_TYRE_HEATING, RaceRules.defaults().tyreHeating(), 0.0);
+        assertEquals(DynamicModel.TYRE_HEATING, new RaceRules(25, true).tyreHeating(), 0.0, "old files and tests");
+        assertEquals(DynamicModel.TYRE_HEATING, RaceRules.NONE.tyreHeating(), 0.0);
+        assertThrows(IllegalArgumentException.class, () -> new RaceRules(0, true, 1.0, -0.1));
+
+        for (double v : new double[]{20.0, 50.0, 80.0}) {
+            // full grip use: T = 25 + heating × v / (0.006 + 0.0015 v)
+            double recalibrated = 25.0;
+            double original = 25.0;
+
+            for (int i = 0; i < 600 * 60; i++) {
+                recalibrated = DynamicModel.nextTyreTemperature(recalibrated, 1.0, false, v, DT, 0.12);
+                original = DynamicModel.nextTyreTemperature(original, 1.0, false, v, DT);
+            }
+
+            assertEquals(25.0 + 0.12 * v / (0.006 + 0.0015 * v), recalibrated, 1e-6);
+            assertTrue(recalibrated > 90.0 && recalibrated < 110.0, "medium window at the limit: " + recalibrated);
+            assertTrue(original > 130.0, "the original rate overheated at the limit: " + original);
+        }
+    }
+
+    @Test
     public void testHardCorneringWarmsTheTyresAndCruisingCoolsThem() {
         DynamicModel model = new DynamicModel(HATCHBACK, TireCompound.MEDIUM, new RaceRules(0, true));
         Car cornering = prepared(model, 20);
@@ -222,5 +245,39 @@ public class RaceRulesTest {
         assertThrows(IllegalArgumentException.class, () -> new Car(0, 0, 0, 0).fillFuel(0));
         assertFalse(RaceRules.NONE.limitedFuel());
         assertTrue(RaceRules.defaults().limitedFuel() && RaceRules.defaults().tyreTemperature());
+    }
+
+    @Test
+    public void testWearMultiplierScalesTheCompoundRateAndOneKeepsTheOriginalRates() {
+        assertEquals(1.0, RaceRules.NONE.tyreWear(), 0.0, "NONE = the model before the mechanics");
+        assertEquals(1.0, new RaceRules(25, true).tyreWear(), 0.0);
+        assertEquals(RaceRules.DEFAULT_TYRE_WEAR, RaceRules.defaults().tyreWear(), 0.0);
+        assertEquals(0.3, RaceRules.defaults().withFuelAutonomy(0).withTyreWear(0.3).tyreWear(), 0.0);
+        assertThrows(IllegalArgumentException.class, () -> new RaceRules(0, false, -0.1));
+        assertThrows(IllegalArgumentException.class, () -> new RaceRules(0, false, RaceRules.MAX_TYRE_WEAR + 1));
+
+        DynamicModel reduced = new DynamicModel(HATCHBACK, TireCompound.MEDIUM, new RaceRules(0, false, 0.1));
+        Car car = prepared(reduced, 20);
+        reduced.step(car, new CarControls(0, 0), DT);
+        // 0.15 per km × 0.1, over the distance of the step
+        assertEquals(car.getSpeed() * DT / 1000.0 * 0.15 * 0.1, car.getTireWear(), 1e-15);
+
+        DynamicModel original = new DynamicModel(HATCHBACK, TireCompound.MEDIUM, new RaceRules(0, false, 1.0));
+        DynamicModel legacy = new DynamicModel(HATCHBACK, TireCompound.MEDIUM);
+        Car a = prepared(original, 20);
+        Car b = prepared(legacy, 20);
+
+        for (int i = 0; i < 600; i++) {
+            original.step(a, new CarControls(0.3, 0.4), DT);
+            legacy.step(b, new CarControls(0.3, 0.4), DT);
+        }
+
+        assertEquals(b.getTireWear(), a.getTireWear(), 0.0, "×1 is bit-identical to the original rates");
+        assertEquals(b.getX(), a.getX(), 0.0);
+
+        DynamicModel noWear = new DynamicModel(HATCHBACK, TireCompound.MEDIUM, new RaceRules(0, false, 0.0));
+        Car none = prepared(noWear, 20);
+        noWear.step(none, new CarControls(0, 1), DT);
+        assertEquals(0.0, none.getTireWear(), 0.0, "×0: no wear");
     }
 }

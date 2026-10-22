@@ -1,5 +1,6 @@
 package org.autonomous_vehicles.ui;
 
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Accordion;
@@ -15,13 +16,18 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
+import org.autonomous_vehicles.evolution.Champion;
 import org.autonomous_vehicles.evolution.CompositeFitness;
+import org.autonomous_vehicles.evolution.Imitation;
 import org.autonomous_vehicles.evolution.FitnessComponent;
 import org.autonomous_vehicles.evolution.MutationOperator;
 import org.autonomous_vehicles.evolution.SelectionType;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.sim.CarBrain;
+import org.autonomous_vehicles.sim.AgentResult;
 import org.autonomous_vehicles.sim.RaceRules;
+import org.autonomous_vehicles.sim.TrackPreview;
+import org.autonomous_vehicles.sim.Vehicles;
 
 import java.util.Arrays;
 import java.util.EnumMap;
@@ -46,11 +52,15 @@ public class ControlPanel extends VBox {
     private final Label architectureLabel = new Label();
     private final CheckBox speedInput = new CheckBox("Speed as an input");
     private final CheckBox carStateInputs = new CheckBox("Fuel, tyre temperature, wear, sliding as inputs");
+    private final CheckBox trackPreview = new CheckBox("Road ahead (0–200 m) as inputs");
+    private final CheckBox forwardRays = new CheckBox("Rays packed towards the front");
+    private final CheckBox gripSteering = new CheckBox("Steering relative to the grip");
     private final Slider timeLimit = slider(20, 900, 60, 0);
     private final Slider rayRange = slider(20, 300, 80, 0);
     private final TextField seed = new TextField();
     private final Slider fuelAutonomy = slider(0, 300, RaceRules.DEFAULT_FUEL_AUTONOMY, 0);
     private final CheckBox tyreTemperature = new CheckBox("Tyre temperature (grip window)");
+    private final Slider tyreWear = slider(0, 1, RaceRules.DEFAULT_TYRE_WEAR, 2);
 
     private final Slider mutationRate = slider(0, 0.5, 0.08, 2);
     private final Slider mutationStrength = slider(0, 1.5, 0.25, 2);
@@ -141,6 +151,13 @@ public class ControlPanel extends VBox {
         carStateInputs.selectedProperty().addListener((obs, old, value) -> updateArchitectureLabel());
         carStateInputs.setTooltip(new Tooltip("4 more inputs: fuel left, tyre temperature relative to the compound's "
                 + "window, tyre wear, sliding. Constant for the kinematic car."));
+        trackPreview.selectedProperty().addListener((obs, old, value) -> updateArchitectureLabel());
+        trackPreview.setTooltip(new Tooltip(TrackPreview.INPUTS + " more inputs: where the road goes 0, 25, 50, 100, "
+                + "150 and 200 m ahead, relative to the car's heading. Lets a fast car see a bend before the rays do."));
+        forwardRays.setTooltip(new Tooltip("Same number of rays, packed around the heading (e.g. 0°, ±6°, ±23°, ±51°, "
+                + "±90° for 9 rays) instead of evenly spread."));
+        gripSteering.setTooltip(new Tooltip("Steering ±1 asks for all the grip as cornering force, at any speed, "
+                + "instead of full steering lock. Grip-limited cars only."));
 
         Button apply = new Button("Apply & restart");
         apply.setDefaultButton(true);
@@ -152,15 +169,37 @@ public class ControlPanel extends VBox {
         grid.add(architectureLabel, 1, 2);
         grid.add(speedInput, 1, 3);
         grid.add(carStateInputs, 1, 4);
-        row(grid, 5, "Time limit (s)", timeLimit, "A car is stopped after this time.");
-        row(grid, 6, "Sensor range (m)", rayRange, "How far the distance rays see.");
-        row(grid, 7, "Seed", seed, "Same seed = same run.");
-        row(grid, 8, "Fuel (s at full power)", fuelAutonomy, "Starting fuel of grip-limited cars, in seconds of "
+        grid.add(trackPreview, 1, 5);
+        grid.add(forwardRays, 1, 6);
+        grid.add(gripSteering, 1, 7);
+        row(grid, 8, "Time limit (s)", timeLimit, "A car is stopped after this time.");
+        row(grid, 9, "Sensor range (m)", rayRange, "How far the distance rays see.");
+        row(grid, 10, "Seed", seed, "Same seed = same run.");
+        row(grid, 11, "Fuel (s at full power)", fuelAutonomy, "Starting fuel of grip-limited cars, in seconds of "
                 + "full power; 0 = unlimited. A dry car loses drive and is out once it stops. Ignored by kinematic.");
-        grid.add(tyreTemperature, 1, 9);
+        grid.add(tyreTemperature, 1, 12);
         Tooltip.install(tyreTemperature, new Tooltip("Tyres heat with grip use and sliding, cool in the airflow; "
                 + "grip is best inside the compound's window. Ignored by the kinematic car."));
-        grid.add(apply, 1, 10);
+        row(grid, 13, "Tyre wear (×)", tyreWear, "Multiplier of the compounds' wear rates. 1 = original rates (a "
+                + "medium is worn out after ~2 laps of São Paulo), 0.1 = ~15 laps, 0 = no wear. Ignored by kinematic.");
+        grid.add(apply, 1, 14);
+
+        Button recommended = new Button("Fastest-learning defaults");
+        recommended.setOnAction(event -> applyRecommended());
+        recommended.setTooltip(new Tooltip("Resets population, network, evolution, fitness and race settings to the "
+                + "values that learned fastest (100 cars, 6 neurons, mutation 8 %/0.25, truncation 10 % with 5 elites, "
+                + "default fitness, unlimited fuel, tyre wear ×" + RaceRules.DEFAULT_TYRE_WEAR + "). Keeps the track, "
+                + "car, tyres and seed, and restarts the run."));
+        grid.add(recommended, 1, 15);
+
+        Button imitate = new Button("Learn from the expert");
+        imitate.setOnAction(event -> learnFromExpert(imitate));
+        imitate.setTooltip(new Tooltip("Pre-trains a network by imitating an expert driver that follows a computed "
+                + "racing line (backpropagation + DAgger), then restarts the evolution from it with fine mutation "
+                + "(3 %/0.1). Turns on the road-ahead inputs and a 32-32 network. Grip-limited cars only; takes "
+                + "2–5 minutes, the current run goes on meanwhile. Formula car on São Paulo: 1:43.6 after 150 "
+                + "generations (best evolved from scratch: 2:24)."));
+        grid.add(imitate, 1, 16);
 
         return new TitledPane("Population & network · restarts the run", grid);
     }
@@ -175,11 +214,15 @@ public class ControlPanel extends VBox {
         hiddenLayers.setValue(Arrays.stream(config.hiddenLayers()).mapToObj(String::valueOf).collect(Collectors.joining("-")));
         speedInput.setSelected(config.useSpeedInput());
         carStateInputs.setSelected(config.useCarStateInputs());
+        trackPreview.setSelected(config.useTrackPreview());
+        forwardRays.setSelected(config.rayLayout() == SimulationConfig.RayLayout.FORWARD);
+        gripSteering.setSelected(config.gripSteering());
         timeLimit.setValue(config.settings().maxTime());
         rayRange.setValue(config.rayRange());
         seed.setText(String.valueOf(config.seed()));
         fuelAutonomy.setValue(config.rules().fuelAutonomy());
         tyreTemperature.setSelected(config.rules().tyreTemperature());
+        tyreWear.setValue(config.rules().tyreWear());
         mutationRate.setValue(config.mutationRate());
         mutationStrength.setValue(config.mutationStrength());
         noise.setValue(config.noise());
@@ -198,7 +241,8 @@ public class ControlPanel extends VBox {
         try {
             int[] hidden = parseHiddenLayers(hiddenLayers.getValue());
             StringBuilder label = new StringBuilder("Network: ").append(controller.getConfig().rayCount()
-                    + (speedInput.isSelected() ? 1 : 0) + (carStateInputs.isSelected() ? CarBrain.CAR_STATE_INPUTS : 0));
+                    + (speedInput.isSelected() ? 1 : 0) + (carStateInputs.isSelected() ? CarBrain.CAR_STATE_INPUTS : 0)
+                    + (trackPreview.isSelected() ? TrackPreview.INPUTS : 0));
 
             for (int size : hidden) {
                 label.append('-').append(size);
@@ -242,17 +286,76 @@ public class ControlPanel extends VBox {
         }
     }
 
+    private void learnFromExpert(Button button) {
+        SimulationConfig base = controller.getConfig();
+
+        if (Vehicles.KINEMATIC.equals(base.carType())) {
+            status.accept("Imitation needs a grip-limited car: choose a kart, hatchback, sports or formula car.");
+            return;
+        }
+
+        SimulationConfig config = Imitation.recommendedConfig(base);
+        button.setDisable(true);
+        status.accept("Learning from the expert on " + String.join(" + ", config.tracks()) + "… (2–5 min)");
+
+        Thread worker = new Thread(() -> {
+            try {
+                Imitation.Report report = Imitation.train(config, Imitation.Settings.defaults());
+                AgentResult drive = report.best().result();
+                String expert = report.expertLapTimes().isEmpty() ? "no lap"
+                        : String.format(Locale.ROOT, "%.1f s", report.expertLapTimes().getFirst());
+                String learned = drive.laps() > 0 ? String.format(Locale.ROOT, "laps in %.1f s", drive.bestLapTime())
+                        : String.format(Locale.ROOT, "reaches checkpoint %.0f/%d", drive.progress(),
+                        drive.checkpointCount());
+
+                Platform.runLater(() -> {
+                    controller.retrainFrom(new Champion(config, report.network(), 0, 0.0));
+                    refresh();
+                    onReset.run();
+                    button.setDisable(false);
+                    status.accept("Imitation done: the network " + learned + " (expert " + expert
+                            + ") · evolution restarted from it");
+                });
+            } catch (RuntimeException e) {
+                Platform.runLater(() -> {
+                    button.setDisable(false);
+                    status.accept("Imitation failed: " + e.getMessage());
+                });
+            }
+        }, "imitation");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void applyRecommended() {
+        SimulationConfig candidate = QuickSetup.recommended(controller.getConfig());
+
+        if (!controller.applyConfig(candidate)) {
+            controller.reset();
+        }
+
+        refresh();
+        onReset.run();
+        status.accept("Fastest-learning defaults applied · restarted (" + candidate.architectureLabel() + ", "
+                + "truncation 10 %, unlimited fuel)");
+    }
+
     private void applyWithReset() {
         try {
             SimulationConfig candidate = hotValues(controller.getConfig())
                     .populationSize((int) Math.round(population.getValue()))
                     .useSpeedInput(speedInput.isSelected())
                     .useCarStateInputs(carStateInputs.isSelected())
+                    .useTrackPreview(trackPreview.isSelected())
+                    .rayLayout(forwardRays.isSelected() ? SimulationConfig.RayLayout.FORWARD
+                            : SimulationConfig.RayLayout.EVEN)
+                    .gripSteering(gripSteering.isSelected())
                     .hiddenLayers(parseHiddenLayers(hiddenLayers.getValue()))
                     .rayRange(Math.round(rayRange.getValue()))
                     .settings(controller.getConfig().settings().withMaxTime(Math.round(timeLimit.getValue())))
                     .seed(Long.parseLong(seed.getText().trim()))
-                    .rules(new RaceRules(Math.round(fuelAutonomy.getValue()), tyreTemperature.isSelected()))
+                    .rules(new RaceRules(Math.round(fuelAutonomy.getValue()), tyreTemperature.isSelected(),
+                            round(tyreWear.getValue(), 2), controller.getConfig().rules().tyreHeating()))
                     .build();
 
             if (!controller.applyConfig(candidate)) {

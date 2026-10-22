@@ -6,6 +6,7 @@ import org.autonomous_vehicles.sim.CarBrain;
 import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.Simulation;
 import org.autonomous_vehicles.sim.SimulationSettings;
+import org.autonomous_vehicles.sim.TrackPreview;
 import org.autonomous_vehicles.util.Rng;
 import org.junit.jupiter.api.Test;
 
@@ -65,6 +66,30 @@ public class NetworkInputsTest {
         assertNull(NetworkInputs.adapt(plain, PLAIN, FULL.toBuilder().hiddenLayers(8).build()));
         assertNull(NetworkInputs.adapt(plain, PLAIN, FULL.toBuilder().rayCount(7).build()));
         assertSame(plain, NetworkInputs.adapt(plain, PLAIN, PLAIN.toBuilder().tracks("hairpin").build()));
+        assertNull(NetworkInputs.adapt(plain, PLAIN, PLAIN.toBuilder().gripSteering(true).build()),
+                "same shape, but the steering output would mean something else");
+        assertNull(NetworkInputs.adapt(plain, PLAIN, PLAIN.toBuilder().rayLayout(SimulationConfig.RayLayout.FORWARD)
+                .build()), "same shape, but the rays would point elsewhere");
+        SimulationConfig preview = FULL.toBuilder().useTrackPreview(true).build();
+        assertNull(NetworkInputs.adapt(new NeuralNetwork(new Rng(2), preview.architecture()), preview, FULL));
+    }
+
+    @Test
+    public void testTrackPreviewIsAddedAfterTheCarStateWithZeroWeights() {
+        SimulationConfig preview = FULL.toBuilder().useTrackPreview(true).build();
+        NeuralNetwork network = new NeuralNetwork(new Rng(2), FULL.architecture());
+        double[][] before = network.getWeights()[0];
+        double[][] after = NetworkInputs.adapt(network, FULL, preview).getWeights()[0];
+
+        assertEquals(10 + TrackPreview.INPUTS, after[0].length);
+
+        for (int n = 0; n < before.length; n++) {
+            assertArrayEquals(before[n], java.util.Arrays.copyOf(after[n], 10), "rays, speed, car state unchanged");
+
+            for (int i = 10; i < after[n].length; i++) {
+                assertEquals(0.0, after[n][i], "the road ahead starts ignored");
+            }
+        }
     }
 
     @Test
@@ -112,6 +137,28 @@ public class NetworkInputsTest {
 
         for (int i = 0; i < 10; i++) {
             assertArrayEquals(b.get(i).getGenome(), a.get(i).getGenome(), "unchanged without car state inputs");
+        }
+    }
+
+    @Test
+    public void testRandomPopulationsStartBlindToTheRoadAheadToo() {
+        SimulationConfig preview = FULL.toBuilder().useTrackPreview(true).populationSize(10).eliteCount(1).build();
+        Population blind = NetworkInputs.randomPopulation(preview, new Rng(6));
+        Population random = new Population(10, preview.architecture(), new Rng(6));
+        int first = preview.inputSize() - TrackPreview.INPUTS;
+
+        for (int k = 0; k < 10; k++) {
+            double[][] blindLayer = blind.get(k).getNetwork().getWeights()[0];
+            double[][] randomLayer = random.get(k).getNetwork().getWeights()[0];
+
+            for (int n = 0; n < blindLayer.length; n++) {
+                assertArrayEquals(java.util.Arrays.copyOf(randomLayer[n], 6), java.util.Arrays.copyOf(blindLayer[n], 6),
+                        "same draws for the rays and speed");
+
+                for (int i = first; i < preview.inputSize(); i++) {
+                    assertEquals(0.0, blindLayer[n][i], "the road ahead starts ignored");
+                }
+            }
         }
     }
 }

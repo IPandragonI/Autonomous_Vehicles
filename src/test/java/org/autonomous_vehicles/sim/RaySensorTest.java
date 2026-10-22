@@ -122,4 +122,19 @@ public class RaySensorTest {
         assertThrows(IllegalArgumentException.class, () -> new RaySensor(new double[]{0}, 0));
         assertThrows(IllegalArgumentException.class, () -> new RaySensor(new double[]{Double.NaN}, 10));
     }
+
+    @Test
+    public void testForwardFocusedRaysArePackedTowardsTheFrontAndSymmetric() {
+        double[] angles = RaySensor.forwardFocused(9, Math.PI, 200).getAngles();
+        double[] expectedDegrees = {-90, -50.625, -22.5, -5.625, 0, 5.625, 22.5, 50.625, 90};
+
+        for (int i = 0; i < angles.length; i++) {
+            assertEquals(expectedDegrees[i], Math.toDegrees(angles[i]), 1e-9, "(±u)² × 90°");
+        }
+
+        assertArrayEquals(new double[]{0.0}, RaySensor.forwardFocused(1, Math.PI, 80).getAngles(), 0.0);
+        assertArrayEquals(RaySensor.evenlySpread(3, Math.PI, 80).getAngles(),
+                RaySensor.forwardFocused(3, Math.PI, 80).getAngles(), EPSILON, "u = ±1 or 0: same as even");
+        assertThrows(IllegalArgumentException.class, () -> RaySensor.forwardFocused(0, Math.PI, 80));
+    }
 }

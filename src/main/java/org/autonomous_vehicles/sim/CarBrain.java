@@ -10,7 +10,8 @@ import java.util.List;
  * <p>
  * Inputs: the normalised ray distances in [0, 1], optionally followed by the speed mapped to [0, 1]
  * (0 = full reverse, 0.5 = stopped, 1 = full speed), optionally followed by the {@link #CAR_STATE_INPUTS} car state
- * inputs of {@link #carState} (fuel, tyre temperature, tyre wear, sliding). Outputs: two Tanh values in [-1, 1],
+ * inputs of {@link #carState} (fuel, tyre temperature, tyre wear, sliding), optionally followed by the
+ * {@link TrackPreview#INPUTS} road-ahead readings of {@link TrackPreview} in [-1, 1]. Outputs: two Tanh values in [-1, 1],
  * read as (steer, throttle). A network whose weights and biases are all zero outputs tanh(0) = 0
  * for both, i.e. neutral controls: the car stays still on the start line.
  */
@@ -29,7 +30,10 @@ public class CarBrain {
     private final boolean useCarState;
     /** Compound whose window the temperature input is read against; null without tyre temperature. */
     private final TireCompound temperatureCompound;
+    private final boolean useTrackPreview;
 
+    /** Centre-line segment the car was nearest to at the last reading (search hint), -1 before the first one. */
+    private int previewSegment = -1;
     private double[] lastInputs;
     private double[] lastOutputs;
 
@@ -51,8 +55,17 @@ public class CarBrain {
      */
     public CarBrain(NeuralNetwork network, RaySensor sensor, boolean useSpeed, boolean useCarState,
                     VehicleModel vehicle) {
+        this(network, sensor, useSpeed, useCarState, false, vehicle);
+    }
+
+    /**
+     * @param useTrackPreview also feed the road ahead ({@link TrackPreview}) to the network
+     */
+    public CarBrain(NeuralNetwork network, RaySensor sensor, boolean useSpeed, boolean useCarState,
+                    boolean useTrackPreview, VehicleModel vehicle) {
         this(network, sensor, useSpeed, vehicle == null ? CarPhysics.MAX_SPEED : vehicle.topSpeed(), useCarState,
-                vehicle instanceof DynamicModel model && model.getRules().tyreTemperature() ? model.getTire() : null);
+                vehicle instanceof DynamicModel model && model.getRules().tyreTemperature() ? model.getTire() : null,
+                useTrackPreview);
 
         if (vehicle == null) {
             throw new IllegalArgumentException("Vehicle must not be null.");
@@ -61,6 +74,11 @@ public class CarBrain {
 
     private CarBrain(NeuralNetwork network, RaySensor sensor, boolean useSpeed, double speedScale,
                      boolean useCarState, TireCompound temperatureCompound) {
+        this(network, sensor, useSpeed, speedScale, useCarState, temperatureCompound, false);
+    }
+
+    private CarBrain(NeuralNetwork network, RaySensor sensor, boolean useSpeed, double speedScale,
+                     boolean useCarState, TireCompound temperatureCompound, boolean useTrackPreview) {
         if (!(speedScale > 0.0)) {
             throw new IllegalArgumentException("Speed scale must be positive.");
         }
@@ -70,7 +88,7 @@ public class CarBrain {
         }
 
         int[] architecture = network.getArchitecture();
-        int expected = inputSize(sensor, useSpeed, useCarState);
+        int expected = inputSize(sensor, useSpeed, useCarState, useTrackPreview);
 
         if (architecture[0] != expected) {
             throw new IllegalArgumentException("Network expects " + architecture[0] + " inputs but the sensors provide "
@@ -87,6 +105,7 @@ public class CarBrain {
         this.speedScale = speedScale;
         this.useCarState = useCarState;
         this.temperatureCompound = temperatureCompound;
+        this.useTrackPreview = useTrackPreview;
     }
 
     public static int inputSize(RaySensor sensor, boolean useSpeed) {
@@ -94,17 +113,22 @@ public class CarBrain {
     }
 
     public static int inputSize(RaySensor sensor, boolean useSpeed, boolean useCarState) {
-        return sensor.getRayCount() + (useSpeed ? 1 : 0) + (useCarState ? CAR_STATE_INPUTS : 0);
+        return inputSize(sensor, useSpeed, useCarState, false);
+    }
+
+    public static int inputSize(RaySensor sensor, boolean useSpeed, boolean useCarState, boolean useTrackPreview) {
+        return sensor.getRayCount() + (useSpeed ? 1 : 0) + (useCarState ? CAR_STATE_INPUTS : 0)
+                + (useTrackPreview ? TrackPreview.INPUTS : 0);
     }
 
     public double[] inputs(Car car, Track track) {
         double[] rays = sensor.sense(car, track);
 
-        if (!useSpeed && !useCarState) {
+        if (!useSpeed && !useCarState && !useTrackPreview) {
             return rays;
         }
 
-        double[] inputs = new double[inputSize(sensor, useSpeed, useCarState)];
+        double[] inputs = new double[inputSize(sensor, useSpeed, useCarState, useTrackPreview)];
         System.arraycopy(rays, 0, inputs, 0, rays.length);
         int next = rays.length;
 
@@ -114,6 +138,13 @@ public class CarBrain {
 
         if (useCarState) {
             System.arraycopy(carState(car, temperatureCompound), 0, inputs, next, CAR_STATE_INPUTS);
+            next += CAR_STATE_INPUTS;
+        }
+
+        if (useTrackPreview) {
+            TrackPreview preview = track.getPreview();
+            previewSegment = preview.locate(car.getX(), car.getY(), previewSegment);
+            preview.read(car.getX(), car.getY(), car.getAngle(), previewSegment, inputs, next);
         }
 
         return inputs;
@@ -173,11 +204,21 @@ public class CarBrain {
             labels.addAll(CAR_STATE_LABELS);
         }
 
+        if (useTrackPreview) {
+            for (double distance : TrackPreview.DISTANCES) {
+                labels.add(String.format(java.util.Locale.ROOT, "road %.0f m", distance));
+            }
+        }
+
         return labels;
     }
 
     public boolean usesCarState() {
         return useCarState;
+    }
+
+    public boolean usesTrackPreview() {
+        return useTrackPreview;
     }
 
     public CarControls decide(Car car, Track track) {

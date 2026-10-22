@@ -54,6 +54,26 @@ public class RaySensor {
         return new RaySensor(angles, range);
     }
 
+    /**
+     * Rays packed towards the front: angle = ±(fieldOfView / 2) × u², u evenly spread in [0, 1] from the centre ray
+     * outwards. 9 rays over 180° point at 0°, ±5.6°, ±22.5°, ±50.6°, ±90°: at speed what matters is where the road
+     * goes far ahead, which evenly spread rays sample with a single ray. Symmetric, like {@link #evenlySpread}.
+     */
+    public static RaySensor forwardFocused(int rayCount, double fieldOfView, double range) {
+        if (rayCount < 1) {
+            throw new IllegalArgumentException("A sensor needs at least one ray.");
+        }
+
+        double[] angles = new double[rayCount];
+
+        for (int i = 0; i < rayCount; i++) {
+            double u = rayCount == 1 ? 0.0 : (2.0 * i - (rayCount - 1)) / (rayCount - 1);
+            angles[i] = Math.signum(u) * u * u * fieldOfView / 2.0;
+        }
+
+        return new RaySensor(angles, range);
+    }
+
     public double[] sense(Car car, Track track) {
         double[] distances = distances(car, track);
 

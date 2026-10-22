@@ -264,7 +264,7 @@ public final class Tracks {
         Vec2 startTangent = tangents.get(startIndex);
 
         return new Track(name, outer, inner, centerline.get(startIndex),
-                Math.atan2(startTangent.y(), startTangent.x()), checkpoints);
+                Math.atan2(startTangent.y(), startTangent.x()), checkpoints, centerline);
     }
 
     /**

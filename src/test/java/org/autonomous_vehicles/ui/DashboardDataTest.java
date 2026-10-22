@@ -1,7 +1,10 @@
 package org.autonomous_vehicles.ui;
 
+import org.autonomous_vehicles.evolution.CompositeFitness;
+import org.autonomous_vehicles.evolution.SelectionType;
 import org.autonomous_vehicles.evolution.SimulationConfig;
 import org.autonomous_vehicles.sim.Car;
+import org.autonomous_vehicles.sim.RaceRules;
 import org.autonomous_vehicles.sim.CarControls;
 import org.autonomous_vehicles.sim.DeathCause;
 import org.autonomous_vehicles.sim.DynamicModel;
@@ -99,12 +102,49 @@ public class DashboardDataTest {
         assertEquals(SimulationSettings.recommendedMaxTime(Tracks.byName("hairpin"), hatchback.createVehicle()),
                 hatchback.settings().maxTime(), 0.0);
         assertArrayEquals(base.hiddenLayers(), hatchback.hiddenLayers(), "The network size is kept.");
+        assertEquals(QuickSetup.FAST_CAR_RAYS, hatchback.rayCount());
+        assertEquals(SimulationConfig.RayLayout.FORWARD, hatchback.rayLayout());
+        assertEquals(base.rayRange(), hatchback.rayRange(), 0.0, "200 m rays measured worse: the range is kept");
+        assertFalse(hatchback.useTrackPreview() || hatchback.gripSteering(), "opt-in");
 
         SimulationConfig back = QuickSetup.apply(hatchback, List.of("oval"), Vehicles.KINEMATIC, TireCompound.HARD);
 
         assertFalse(back.useSpeedInput());
+        assertEquals(5, back.rayCount(), "the assignment's sensors");
+        assertEquals(SimulationConfig.RayLayout.EVEN, back.rayLayout());
         assertEquals(60.0, back.settings().maxTime(), 0.0);
         assertTrue(QuickSetup.describe(hatchback).contains("hairpin"));
+    }
+
+    @Test
+    public void testRecommendedSettingsAreTheFastestLearningOnesAndKeepTrackCarAndSeed() {
+        SimulationConfig tweaked = QuickSetup.apply(SimulationConfig.defaults(), List.of("SaoPaulo"), "formula",
+                TireCompound.SOFT).toBuilder().populationSize(37).hiddenLayers(12, 8).mutationRate(0.3)
+                .selection(SelectionType.RANDOM).eliteCount(0).crossover(SimulationConfig.Crossover.UNIFORM)
+                .useTrackPreview(true).gripSteering(true).rayRange(200).seed(99).build();
+
+        SimulationConfig recommended = QuickSetup.recommended(tweaked);
+
+        assertEquals(List.of("SaoPaulo"), recommended.tracks());
+        assertEquals("formula", recommended.carType());
+        assertEquals(TireCompound.SOFT, recommended.tire());
+        assertEquals(99, recommended.seed());
+        assertEquals(100, recommended.populationSize());
+        assertArrayEquals(new int[]{6}, recommended.hiddenLayers());
+        assertEquals(0.08, recommended.mutationRate(), 0.0);
+        assertEquals(0.25, recommended.mutationStrength(), 0.0);
+        assertEquals(SelectionType.TRUNCATION, recommended.selection());
+        assertEquals(0.10, recommended.truncationFraction(), 0.0);
+        assertEquals(5, recommended.eliteCount());
+        assertEquals(SimulationConfig.Crossover.NONE, recommended.crossover());
+        assertEquals(CompositeFitness.defaults(), recommended.compositeFitness());
+        assertFalse(recommended.rules().limitedFuel(), "with 25 s no car finishes a São Paulo lap");
+        assertEquals(RaceRules.DEFAULT_TYRE_WEAR, recommended.rules().tyreWear(), 0.0);
+        assertFalse(recommended.useTrackPreview() || recommended.gripSteering());
+        assertEquals(QuickSetup.FAST_CAR_RAYS, recommended.rayCount());
+        assertEquals(80.0, recommended.rayRange(), 0.0);
+        assertEquals(tweaked.settings().maxTime(), recommended.settings().maxTime(), 0.0);
+        assertEquals(recommended, QuickSetup.recommended(recommended), "applying it twice changes nothing");
     }
 
     @Test

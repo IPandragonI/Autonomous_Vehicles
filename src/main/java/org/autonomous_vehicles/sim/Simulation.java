@@ -46,6 +46,15 @@ public class Simulation {
      */
     public Simulation(Track track, List<NeuralNetwork> networks, RaySensor sensor, boolean useSpeed,
                       boolean useCarState, SimulationSettings settings, VehicleModel vehicle) {
+        this(track, networks, sensor, useSpeed, useCarState, false, settings, vehicle);
+    }
+
+    /**
+     * @param useTrackPreview the networks also read the road ahead ({@link TrackPreview})
+     */
+    public Simulation(Track track, List<NeuralNetwork> networks, RaySensor sensor, boolean useSpeed,
+                      boolean useCarState, boolean useTrackPreview, SimulationSettings settings,
+                      VehicleModel vehicle) {
         if (track == null || networks == null || sensor == null || settings == null || vehicle == null) {
             throw new IllegalArgumentException("Simulation arguments must not be null.");
         }
@@ -62,7 +71,7 @@ public class Simulation {
             // different threads never share mutable state.
             NeuralNetwork original = networks.get(i);
             NeuralNetwork network = original == null || seen.add(original) ? original : original.copy();
-            CarBrain brain = new CarBrain(network, sensor, useSpeed, useCarState, vehicle);
+            CarBrain brain = new CarBrain(network, sensor, useSpeed, useCarState, useTrackPreview, vehicle);
             created.add(new CarAgent(i, track, brain, settings, vehicle));
         }
 

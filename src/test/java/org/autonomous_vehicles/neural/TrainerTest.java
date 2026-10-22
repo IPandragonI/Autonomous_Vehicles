@@ -150,4 +150,33 @@ public class TrainerTest {
             assertEquals(expectedClass, predictedClass, "XOR échoue pour l'entrée " + inputs[i][0] + ", " + inputs[i][1] + " ; prédiction = " + prediction);
         }
     }
+
+    @Test
+    public void testMiniBatchLearnsTwoOutputsAtOnce() {
+        // y1 = 0.6 x1 - 0.4 x2, y2 = -0.5 x1 (inside tanh's range): a 2-8-2 tanh network can fit both.
+        Rng rng = new Rng(3);
+        double[][] inputs = new double[200][];
+        double[][] targets = new double[200][];
+
+        for (int i = 0; i < inputs.length; i++) {
+            double x1 = rng.nextDouble() * 2 - 1;
+            double x2 = rng.nextDouble() * 2 - 1;
+            inputs[i] = new double[]{x1, x2};
+            targets[i] = new double[]{0.6 * x1 - 0.4 * x2, -0.5 * x1};
+        }
+
+        Trainer trainer = new Trainer(new NeuralNetwork(new Rng(1), 2, 8, 2), 0.1);
+        double before = trainer.evaluateLoss(inputs, targets);
+
+        for (int epoch = 0; epoch < 300; epoch++) {
+            trainer.trainMiniBatch(inputs, targets, 10);
+        }
+
+        double after = trainer.evaluateLoss(inputs, targets);
+        assertTrue(after < 0.002 && after < before / 20, "loss " + before + " → " + after);
+        double[] prediction = trainer.getNetwork().forward(new double[]{0.5, -0.5});
+        assertEquals(0.5, prediction[0], 0.05);
+        assertEquals(-0.25, prediction[1], 0.05);
+        assertThrows(IllegalArgumentException.class, () -> trainer.trainMiniBatch(inputs, new double[200][1], 10));
+    }
 }

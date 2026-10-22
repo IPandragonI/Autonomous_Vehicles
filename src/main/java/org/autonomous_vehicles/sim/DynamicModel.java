@@ -46,7 +46,12 @@ public final class DynamicModel implements VehicleModel {
     public static final double AMBIENT_TEMPERATURE = 25.0;
     /** Tyres leave tyre blankets warm but below every compound's window: the first bends are slippery. */
     public static final double START_TYRE_TEMPERATURE = 60.0;
-    /** Heating at full grip use, °C per metre driven. */
+    /**
+     * Heating at full grip use, °C per metre driven, before {@link RaceRules#tyreHeating} existed (and still for
+     * {@link RaceRules#NONE} and old champion files). Steady state = 25 + heating × grip use / (0.0015 + 0.006 / v):
+     * at full grip use this settles at 136–158 °C, above every compound's window, so driving at the limit overheated
+     * the tyres even without sliding. See {@link RaceRules#DEFAULT_TYRE_HEATING} for the recalibrated rate.
+     */
     public static final double TYRE_HEATING = 0.20;
     public static final double SLIDING_HEAT_FACTOR = 2.5;
     /** Cooling rate at a standstill, per second, times the excess over the air temperature. */
@@ -57,6 +62,7 @@ public final class DynamicModel implements VehicleModel {
     private final CarSpec spec;
     private final TireCompound tire;
     private final RaceRules rules;
+    private final boolean gripSteering;
     private final double topSpeed;
     private final double fullPowerFuelFlow;
 
@@ -68,6 +74,14 @@ public final class DynamicModel implements VehicleModel {
     }
 
     public DynamicModel(CarSpec spec, TireCompound tire, RaceRules rules) {
+        this(spec, tire, rules, false);
+    }
+
+    /**
+     * @param gripSteering read the steering command relative to the grip ({@link #steeringCurvature}) instead of as a
+     *                     wheel angle
+     */
+    public DynamicModel(CarSpec spec, TireCompound tire, RaceRules rules, boolean gripSteering) {
         if (spec == null || tire == null || rules == null) {
             throw new IllegalArgumentException("Car spec, tyre compound and race rules must not be null.");
         }
@@ -75,6 +89,7 @@ public final class DynamicModel implements VehicleModel {
         this.spec = spec;
         this.tire = tire;
         this.rules = rules;
+        this.gripSteering = gripSteering;
         this.topSpeed = computeTopSpeed();
         this.fullPowerFuelFlow = spec.peakPower() / (THERMAL_EFFICIENCY * FUEL_ENERGY);
     }
@@ -164,7 +179,7 @@ public final class DynamicModel implements VehicleModel {
             tyreAcceleration = driveAcceleration;
         }
 
-        double curvature = Math.tan(controls.steer() * spec.maxSteeringAngle()) / spec.wheelbase();
+        double curvature = steeringCurvature(controls.steer(), v, gripLimit);
         double lateralAcceleration = v * v * curvature;
         double combined = Math.hypot(tyreAcceleration, lateralAcceleration);
         double gripUse = gripLimit > 0.0 ? Math.min(1.0, combined / gripLimit) : 1.0;
@@ -198,7 +213,8 @@ public final class DynamicModel implements VehicleModel {
         car.setAngle(angle);
         car.setPosition(car.getX() + newSpeed * Math.cos(angle) * dt, car.getY() + newSpeed * Math.sin(angle) * dt);
 
-        double wearRate = tire.wearPerKilometre() * (sliding ? TireCompound.SLIDING_WEAR_FACTOR : 1.0);
+        // × 1.0 with the original rates leaves the product bit-identical.
+        double wearRate = tire.wearPerKilometre() * rules.tyreWear() * (sliding ? TireCompound.SLIDING_WEAR_FACTOR : 1.0);
         car.setTireWear(car.getTireWear() + Math.abs(newSpeed) * dt / 1000.0 * wearRate);
         car.setSliding(sliding);
 
@@ -210,21 +226,56 @@ public final class DynamicModel implements VehicleModel {
         }
 
         if (rules.tyreTemperature()) {
-            car.setTireTemperature(nextTyreTemperature(car.getTireTemperature(), gripUse, sliding, newSpeed, dt));
+            car.setTireTemperature(nextTyreTemperature(car.getTireTemperature(), gripUse, sliding, newSpeed, dt,
+                    rules.tyreHeating()));
         }
     }
 
     /**
-     * Tread temperature after {@code dt}: heating ∝ grip use × distance (more while sliding), cooling ∝ the excess
-     * over the air temperature, faster with speed. With these rates a car cornering near the limit settles around
-     * 100 °C (inside every window) whatever its speed, a car that slides repeatedly overheats, and a car cruising
-     * on a straight cools down with a time constant of ~20 s at 100 km/h.
+     * Tread temperature after {@code dt} with the original heating rate {@link #TYRE_HEATING}.
      */
     static double nextTyreTemperature(double celsius, double gripUse, boolean sliding, double speed, double dt) {
+        return nextTyreTemperature(celsius, gripUse, sliding, speed, dt, TYRE_HEATING);
+    }
+
+    /**
+     * Tread temperature after {@code dt}: heating ∝ grip use × distance (more while sliding), cooling ∝ the excess
+     * over the air temperature, faster with speed. With the default rate ({@link RaceRules#DEFAULT_TYRE_HEATING}) a
+     * car cornering near the limit settles at 92–101 °C (inside every window) whatever its speed, a car that slides
+     * repeatedly overheats, and a car cruising on a straight cools down with a time constant of ~20 s at 100 km/h.
+     *
+     * @param heatingRate heating at full grip use, °C per metre
+     */
+    static double nextTyreTemperature(double celsius, double gripUse, boolean sliding, double speed, double dt,
+                                      double heatingRate) {
         double distance = Math.abs(speed) * dt;
-        double heating = TYRE_HEATING * gripUse * (sliding ? SLIDING_HEAT_FACTOR : 1.0) * distance;
+        double heating = heatingRate * gripUse * (sliding ? SLIDING_HEAT_FACTOR : 1.0) * distance;
         double cooling = (celsius - AMBIENT_TEMPERATURE) * (TYRE_COOLING_STILL * dt + TYRE_COOLING_AIRFLOW * distance);
         return celsius + heating - cooling;
+    }
+
+    /**
+     * Path curvature (1/m) requested by a steering command in [-1, 1].
+     * <ul>
+     *     <li>Wheel angle (default): the command is the front-wheel angle, steer × max lock. At 290 km/h a formula
+     *     car is at the grip limit with 4 % of its lock, so a network must hold its output within ±0.04 on a
+     *     straight: every small mutation of the steering makes it slide, and evolution keeps slow cars.</li>
+     *     <li>Grip ({@code gripSteering}): ±1 asks for the whole grip as lateral acceleration, μ·(g + downforce),
+     *     capped by the lock at low speed. One output then means the same at every speed, like a driver who feels
+     *     the grip; braking or accelerating at the same time still exceeds the friction circle and slides.</li>
+     * </ul>
+     *
+     * @param gripLimit grip available now, m/s² (wear, temperature and downforce included)
+     */
+    double steeringCurvature(double steer, double speed, double gripLimit) {
+        if (!gripSteering) {
+            return Math.tan(steer * spec.maxSteeringAngle()) / spec.wheelbase();
+        }
+
+        double lockCurvature = Math.tan(spec.maxSteeringAngle()) / spec.wheelbase();
+        double squaredSpeed = speed * speed;
+        double gripCurvature = squaredSpeed > 0.0 ? gripLimit / squaredSpeed : lockCurvature;
+        return steer * Math.min(lockCurvature, gripCurvature);
     }
 
     /**
@@ -351,5 +402,9 @@ public final class DynamicModel implements VehicleModel {
 
     public RaceRules getRules() {
         return rules;
+    }
+
+    public boolean usesGripSteering() {
+        return gripSteering;
     }
 }
